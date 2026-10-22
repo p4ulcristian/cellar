@@ -10,7 +10,7 @@ message and runs nothing; what a map can't say (a rename, a drop, a backfill)
 is a change, given as data and run once.
 
 ```clojure
-io.github.p4ulcristian/cellar {:git/tag "v0.1.1" :git/sha "1354d94"}
+io.github.p4ulcristian/cellar {:git/tag "v0.1.2" :git/sha "107292b"}
 ```
 
 Needs only next.jdbc, PgJDBC, HikariCP, jsonista and malli. One public namespace,
