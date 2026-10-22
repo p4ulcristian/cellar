@@ -17,11 +17,12 @@
 
      (def orders
        {:table     :orders
-        :columns   [[:order/id         :uuid         {:primary-key? true  :optional? false :unique? false :default :random-uuid :references nil}]
-                    [:order/shop-id    :uuid         {:primary-key? false :optional? false :unique? false :default nil          :references :shop/id}]
-                    [:order/status     [:enum \"draft\" \"done\"] {:primary-key? false :optional? false :unique? false :default \"draft\" :references nil}]
-                    [:order/note       :string       {:primary-key? false :optional? true  :unique? false :default nil          :references nil}]
-                    [:order/created-at :time/instant {:primary-key? false :optional? false :unique? false :default :now         :references nil}]]
+        :columns   [[:order/id         :uuid         {:primary-key? true :default :random-uuid}]
+                    [:order/shop-id    :uuid         {:references :shop/id}]
+                    [:order/status     [:enum \"draft\" \"done\"] {:default \"draft\"}]
+                    [:order/note       :string       {:optional? true}]
+                    [:order/created-at :time/instant {:default :now}]
+                    [:order/total      :decimal]]
         :indexes   [[:order/shop-id :order/created-at]]
         :gates     nil
         :on-change nil})
@@ -32,14 +33,16 @@
 
    A table map writes out every key cellar reads (:indexes [] for none,
    :gates and :on-change nil for none); it is open, so another library's
-   keys ride along. A column is [key type options], its five options every
-   one written out; the type is in malli's words, as wire
+   keys ride along. A column is [key type] or [key type options], and says
+   only the options it has; an unsaid one is no or none, the safe side
+   (NOT NULL, not unique, not a primary key, no default, no reference), and
+   an unknown one is refused. The type is in malli's words, as wire
    (github.com/p4ulcristian/wire) reads them (:uuid :int :decimal :double
    :string :boolean :time/instant :time/local-date [:enum …]); it is NOT
-   NULL unless :optional? is true; :unique? true makes a unique key;
-   :default is nil (none), :random-uuid, :now, a number, true/false or text;
-   :references is nil or another table's one-column primary key, which it
-   points at. A table key with a
+   NULL unless {:optional? true}; {:unique? true} makes a unique key;
+   {:primary-key? true} puts it in the primary key; :default is
+   :random-uuid, :now, a number, true/false or text; {:references :shop/id}
+   points at another table's one-column primary key. A table key with a
    namespace is in that Postgres schema (folder): :billing/invoices is
    billing.invoices; one without is in public.
 

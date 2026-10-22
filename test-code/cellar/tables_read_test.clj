@@ -5,7 +5,7 @@
    [clojure.string :as str]
    [clojure.test :refer [deftest is testing]]
    [cellar.api :as database]
-   [cellar.test-settings :as test-settings :refer [column]]))
+   [cellar.test-settings :as test-settings]))
 
 (def ^:private port test-settings/port)
 
@@ -80,7 +80,7 @@
 
 (def ^:private told-things
   {:table     :told-things
-   :columns   [(column :told-thing/id :int :primary-key? true)]
+   :columns   [[:told-thing/id :int {:primary-key? true}]]
    :indexes   []
    :gates     nil
    :on-change {:function "public.tell_test" :arguments ["told_thing__id"]}})

@@ -2,7 +2,9 @@
   "cellar's settings, and the data its functions take, as malli shapes,
    checked before anything runs. Nothing has a default: every key is
    written out (nil and :none where they are a choice), and a missing or
-   unknown one refuses, named, with every other problem at once.
+   unknown one refuses, named, with every other problem at once. A column
+   is the one exception: it says only the options it has, an unsaid one
+   meaning no or none.
 
    The pool's settings and the functions' options are closed maps. A table
    map is open: the libraries on top keep their own keys in it (doorbell's
@@ -147,27 +149,36 @@
 ;; Table maps
 
 (def column-options-shape
-  "A column's options, every key written out:
-   :primary-key? :optional? (NULL allowed) :unique?, true or false;
-   :default, nil for none, or :random-uuid, :now, a number, true/false or text;
-   :references, nil, or another table's one-column primary key (:shop/id)."
+  "A column's options, only the ones it has; an unsaid one is no or none,
+   the safe side: NOT NULL, not unique, not a primary key, no default, no
+   reference. :primary-key? :optional? (NULL allowed) :unique?, true or
+   false; :default, nil for none, or :random-uuid, :now, a number,
+   true/false or text; :references, nil, or another table's one-column
+   primary key (:shop/id). Closed: an unknown key is refused."
   [:map {:closed true}
-   [:primary-key? :boolean]
-   [:optional? :boolean]
-   [:unique? :boolean]
-   [:default [:maybe [:or [:enum :random-uuid :now] number? boolean? :string]]]
-   [:references [:maybe :qualified-keyword]]])
+   [:primary-key? {:optional true} :boolean]
+   [:optional? {:optional true} :boolean]
+   [:unique? {:optional true} :boolean]
+   [:default {:optional true} [:maybe [:or [:enum :random-uuid :now] number? boolean? :string]]]
+   [:references {:optional true} [:maybe :qualified-keyword]]])
+
+(def column-shape
+  "A column: [key type] or [key type options], the type in wire's words."
+  [:multi {:dispatch #(when (vector? %) (count %))}
+   [2 [:tuple :qualified-keyword :any]]
+   [3 [:tuple :qualified-keyword :any column-options-shape]]
+   [::malli/default [:fn {:error/message "a column is [key type] or [key type options]"} (constantly false)]]])
 
 (def table-shape
   "A table map, every key cellar reads written out. :table, its key;
-   :columns, [key type options] each, the type in wire's words; :indexes,
+   :columns, [key type] or [key type options] each (column-shape); :indexes,
    [[key …] …], [] for none; :gates, nil for none (no row-level security),
    or a SQL condition for each operation, \"false\" for none allowed;
    :on-change, nil for none, or the function the change triggers call and
    its arguments. Open: another library's keys ride along."
   [:map
    [:table :keyword]
-   [:columns [:sequential [:tuple :qualified-keyword :any column-options-shape]]]
+   [:columns [:sequential column-shape]]
    [:indexes [:sequential [:sequential :qualified-keyword]]]
    [:gates [:maybe [:map {:closed true}
                     [:read :string]

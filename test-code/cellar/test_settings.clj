@@ -1,6 +1,5 @@
 (ns cellar.test-settings
-  "The settings and options the tests run with, each written out, and a
-   column with its five options: the tests' own shorthand, not cellar's."
+  "The settings and options the tests run with, each written out."
   (:require
    [cellar.api :as cellar]))
 
@@ -36,8 +35,3 @@
 (def migrate-options
   {:instant-part {:statement-timeout-ms 10000 :lock-timeout-ms 5000}
    :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}})
-
-(defn column
-  "[k type options], the options none but what is given."
-  [k type & {:as given}]
-  [k type (merge {:primary-key? false :optional? false :unique? false :default nil :references nil} given)])

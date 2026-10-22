@@ -5,7 +5,8 @@
   (:require
    [clojure.test :refer [deftest is testing]]
    [cellar.api :as cellar]
-   [cellar.test-settings :as test-settings :refer [column]])
+   [cellar.tables.desired :as desired]
+   [cellar.test-settings :as test-settings])
   (:import
    (com.zaxxer.hikari HikariDataSource)))
 
@@ -36,7 +37,7 @@
 
 (def ^:private a-table
   {:table     :things
-   :columns   [(column :thing/id :int :primary-key? true)]
+   :columns   [[:thing/id :int {:primary-key? true}]]
    :indexes   []
    :gates     nil
    :on-change nil})
@@ -64,11 +65,21 @@
     (is (= {:type :cellar/bad-tables
             :errors [{:indexes ["missing required key"] :gates ["missing required key"] :on-change ["missing required key"]}]}
            (find-refusal #(cellar/make-plan-from-tables nil [(select-keys a-table [:table :columns])] [])))))
-  (testing "a column writes out its five options"
-    (let [{:keys [type errors]} (find-refusal #(cellar/make-plan-from-tables nil [(assoc a-table :columns [[:thing/id :int {:primary-key? true}]])] []))]
-      (is (= :cellar/bad-tables type))
-      (is (= #{:optional? :unique? :default :references}
-             (set (keys (get-in errors [0 :columns 0 2])))))))
+  (testing "a column says only the options it has; an unsaid one is no or none"
+    (is (= [:map [:thing/id :int] [:thing/note :string] [:thing/when {:optional true} [:maybe :time/instant]]]
+           (cellar/turn-table-into-row-shape (assoc a-table :columns [[:thing/id :int {:primary-key? true}]
+                                                                      [:thing/note :string]
+                                                                      [:thing/when :time/instant {:optional? true}]]))))
+    (let [[[_ things]] (seq (desired/turn-table-maps-into-desired [(assoc a-table :columns [[:thing/id :int]])]))]
+      (is (= [{:name "thing__id" :not-null? true :default nil}]
+             (mapv #(select-keys % [:name :not-null? :default]) (:columns things))))
+      (is (= [[] {} {}] [(:primary-key things) (:uniques things) (:foreign-keys things)]))))
+  (testing "an unknown option is refused, named"
+    (is (= {:type :cellar/bad-tables :errors [{:columns [[nil nil {:primary? ["disallowed key"]}]]}]}
+           (find-refusal #(cellar/make-plan-from-tables nil [(assoc a-table :columns [[:thing/id :int {:primary? true}]])] [])))))
+  (testing "a column is [key type] or [key type options]"
+    (is (= {:type :cellar/bad-tables :errors [{:columns [["a column is [key type] or [key type options]"]]}]}
+           (find-refusal #(cellar/make-plan-from-tables nil [(assoc a-table :columns [[:thing/id]])] [])))))
   (testing "gates write out all four operations"
     (is (= :cellar/bad-tables
            (:type (find-refusal #(cellar/turn-table-into-row-shape (assoc a-table :gates {:read "true"})))))))

@@ -48,33 +48,32 @@ Needs only next.jdbc, PgJDBC, HikariCP, jsonista and malli. One public namespace
                                :idle-in-transaction-timeout-ms :none
                                :time-zone "UTC"}))
 
-;; a column is [key type options], its five options always written out
-(def no-options {:primary-key? false :optional? false :unique? false :default nil :references nil})
-
+;; a column is [key type] or [key type options], and says only the options it has:
+;; an unsaid one is no or none (NOT NULL, not unique, not a primary key, no default, no reference)
 (def shops
   {:table     :shops
-   :columns   [[:shop/id   :uuid   (assoc no-options :primary-key? true :default :random-uuid)]
-               [:shop/name :string no-options]]
+   :columns   [[:shop/id   :uuid   {:primary-key? true :default :random-uuid}]
+               [:shop/name :string]]
    :indexes   []
    :gates     nil
    :on-change nil})
 
 (def orders
   {:table     :orders
-   :columns   [[:order/id            :uuid         (assoc no-options :primary-key? true :default :random-uuid)]
-               [:order/shop-id       :uuid         (assoc no-options :references :shop/id)]
-               [:order/status        [:enum "draft" "paid" "coated"] no-options]
-               [:order/total         :decimal      (assoc no-options :default 0)]
-               [:order/customer-note :string       (assoc no-options :optional? true)]
-               [:order/created-at    :time/instant (assoc no-options :default :now)]]
+   :columns   [[:order/id            :uuid         {:primary-key? true :default :random-uuid}]
+               [:order/shop-id       :uuid         {:references :shop/id}]
+               [:order/status        [:enum "draft" "paid" "coated"]]
+               [:order/total         :decimal      {:default 0}]
+               [:order/customer-note :string       {:optional? true}]
+               [:order/created-at    :time/instant {:default :now}]]
    :indexes   [[:order/shop-id :order/created-at]]
    :gates     nil
    :on-change nil})
 
 (def partner-payouts                     ; a namespaced key: the table billing.partner_payouts
   {:table     :billing/partner-payouts
-   :columns   [[:partner-payout/id     :uuid    (assoc no-options :primary-key? true :default :random-uuid)]
-               [:partner-payout/amount :decimal no-options]]
+   :columns   [[:partner-payout/id     :uuid    {:primary-key? true :default :random-uuid}]
+               [:partner-payout/amount :decimal]]
    :indexes   []
    :gates     nil
    :on-change nil})
@@ -97,6 +96,10 @@ is refused, named, with every other problem at once, before anything runs
 values above are HikariCP's and PgJDBC's own defaults, written out; what
 stays fixed, and why, is in
 [the decision](decisions/2026-10-22-every-value-that-sets-behaviour-is-a-setting.md).
+A column is the exception: it says only the options it has, since an unsaid
+one is the safe answer
+([why](decisions/2026-10-22-a-column-says-only-the-options-it-has.md));
+an unknown option is still refused.
 
 A table map's `:gates`, nil or SQL conditions for all four operations
 (`{:read "…" :insert "…" :update "…" :delete "false"}`), become row-level

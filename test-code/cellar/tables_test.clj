@@ -6,36 +6,36 @@
    [clojure.test :refer [deftest is testing]]
    [cellar.api :as schema]
    [cellar.api :as sql]
-   [cellar.test-settings :as test-settings :refer [column]]))
+   [cellar.test-settings :as test-settings]))
 
 (def ^:private port test-settings/port)
 
 (def ^:private shops
   {:table     :shops
-   :columns   [[:shop/id   :uuid   {:primary-key? true :optional? false :unique? false :default :random-uuid :references nil}]
-               [:shop/name :string {:primary-key? false :optional? false :unique? false :default nil :references nil}]]
+   :columns   [[:shop/id   :uuid   {:primary-key? true :default :random-uuid}]
+               [:shop/name :string]]
    :indexes   []
    :gates     nil
    :on-change nil})
 
 (def ^:private orders
   {:table     :orders
-   :columns   [(column :order/id         :uuid         :primary-key? true :default :random-uuid)
-               (column :order/shop-id    :uuid         :references :shop/id)
-               (column :order/total      :decimal      :default 0)
-               (column :order/status     [:enum "draft" "done"] :default "draft")
-               (column :order/note       :string       :optional? true)
-               (column :order/paid       :boolean      :default false)
-               (column :order/created-at :time/instant :default :now)]
+   :columns   [[:order/id         :uuid         {:primary-key? true :default :random-uuid}]
+               [:order/shop-id    :uuid         {:references :shop/id}]
+               [:order/total      :decimal      {:default 0}]
+               [:order/status     [:enum "draft" "done"] {:default "draft"}]
+               [:order/note       :string       {:optional? true}]
+               [:order/paid       :boolean      {:default false}]
+               [:order/created-at :time/instant {:default :now}]]
    :indexes   [[:order/shop-id :order/created-at]]
    :gates     nil
    :on-change nil})
 
 (def ^:private orders-with-promised
-  (update orders :columns conj (column :order/promised-at :time/instant :optional? true)))
+  (update orders :columns conj [:order/promised-at :time/instant {:optional? true}]))
 
 (def ^:private orders-with-customer-note
-  (assoc-in orders-with-promised [:columns 4] (column :order/customer-note :string :optional? true)))
+  (assoc-in orders-with-promised [:columns 4] [:order/customer-note :string {:optional? true}]))
 
 (defn- run-sql! [pool text]
   (sql/run-statement! pool (sql/make-query-from-sql-text "test" text) {}))
@@ -64,8 +64,8 @@
 
 (def ^:private invoices
   {:table     :billing/invoices
-   :columns   [(column :invoice/id     :uuid   :primary-key? true :default :random-uuid)
-               (column :invoice/number :string :unique? true)]
+   :columns   [[:invoice/id     :uuid   {:primary-key? true :default :random-uuid}]
+               [:invoice/number :string {:unique? true}]]
    :indexes   []
    :gates     nil
    :on-change nil})
@@ -81,7 +81,7 @@
           (is (= nothing-to-do (plan-of pool [shops invoices] []))))
         (testing "a unique key added to a table with rows: built in the slow part"
           (run-sql! pool "INSERT INTO shops (shop__name) VALUES ('Hotcoats')")
-          (let [unique-shops (assoc-in shops [:columns 1] (column :shop/name :string :unique? true))
+          (let [unique-shops (assoc-in shops [:columns 1] [:shop/name :string {:unique? true}])
                 plan         (plan-of pool [unique-shops invoices] [])]
             (is (= [] (:instant plan)))
             (is (= 2 (count (:slow plan))))
@@ -128,7 +128,7 @@
             (is (= nothing-to-do (plan-of pool [shops orders-with-promised] [])))))
 
         (testing "a required column without a default on a table with rows: a stop"
-          (let [plan (plan-of pool [shops (update orders-with-promised :columns conj (column :order/priority :int))] [])]
+          (let [plan (plan-of pool [shops (update orders-with-promised :columns conj [:order/priority :int])] [])]
             (is (re-find #"order__priority is required" (first (:stops plan))))))
 
         (testing "a column in Postgres but in no map: a stop, until a change file says rename"
@@ -145,7 +145,7 @@
             (is (re-find #"CREATE INDEX CONCURRENTLY" (:sql (first (:slow plan)))))))
 
         (testing "a column that became required: a NOT VALID check now, the rest in the background"
-          (let [required (assoc-in orders [:columns 4] (column :order/note :string))
+          (let [required (assoc-in orders [:columns 4] [:order/note :string])
                 _        (run-sql! pool "DROP SCHEMA public CASCADE; CREATE SCHEMA public; DROP SCHEMA cellar CASCADE")
                 _        (migrate-and-wait! pool [shops orders] [])
                 _        (run-sql! pool "INSERT INTO shops (shop__name) VALUES ('Hotcoats')")
