@@ -5,8 +5,10 @@
    connection breaks, the thread waits :reconnect-after-ms, opens another,
    LISTENs again and calls on-reconnect: whatever was sent in between was
    missed. A break, and a failure of either function the app hands in, is
-   written to the options' :log."
+   written to the options' :log; each time it listens again after a break
+   is counted on the options' :meter."
   (:require
+   [cellar.queries.metrics :as metrics]
    [cellar.queries.postgres :as sql]
    [cellar.settings :as settings])
   (:import
@@ -34,7 +36,9 @@
      (with-open [statement (.createStatement connection)]
        (.execute statement (str "LISTEN " channel)))
      ;; told only once listening again, so nothing falls between
-     (when again? (hand-on! options channel on-reconnect))
+     (when again?
+       (metrics/count-reconnect! (:meter options))
+       (hand-on! options channel on-reconnect))
      (let [pg (.unwrap connection PGConnection)]
        (while @running?
          (when-let [batch (seq (read-batch pg options))]
@@ -48,6 +52,7 @@
   (settings/check-listening-options options)
   (when-not (re-matches #"[a-z_][a-z0-9_]*" channel)
     (throw (ex-info (str "Not a channel name: " channel) {:type :cellar/bad-channel :channel channel})))
+  (metrics/declare-listening-metrics! (:meter options))
   (let [{:keys [log reconnect-after-ms stop-wait-ms]} options
         running? (atom true)
         thread   (Thread/startVirtualThread

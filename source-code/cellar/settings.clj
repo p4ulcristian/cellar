@@ -17,6 +17,10 @@
 ;; -----------------------------------------------------------------------------
 ;; The pool
 
+(def ^:private buckets-shape
+  "A histogram's upper bounds; meter checks they are finite and go up."
+  [:vector {:min 1} number?])
+
 (def ^:private none-or-ms
   [:or [:= :none] [:int {:min 1}]])
 
@@ -71,7 +75,13 @@
    :lock-timeout-ms: Postgres cancels a statement that waits longer for a lock.
    :idle-in-transaction-timeout-ms: Postgres closes a connection whose
    transaction sits idle this long.
-   :time-zone: the session's time zone, \"UTC\"."
+   :time-zone: the session's time zone, \"UTC\".
+
+   The metrics (on the meter start-pool! is handed):
+   :metric-buckets: each histogram's upper bounds, in seconds, ascending
+   (meter checks them), no default: {:query-seconds […]}, the time a query
+   takes; :connection-acquire-seconds, the wait for a connection;
+   :connection-usage-seconds, how long one is held."
   [:and
    [:map {:closed true}
     [:host :string]
@@ -93,7 +103,11 @@
     [:statement-timeout-ms none-or-ms]
     [:lock-timeout-ms none-or-ms]
     [:idle-in-transaction-timeout-ms none-or-ms]
-    [:time-zone :string]]
+    [:time-zone :string]
+    [:metric-buckets [:map {:closed true}
+                      [:query-seconds buckets-shape]
+                      [:connection-acquire-seconds buckets-shape]
+                      [:connection-usage-seconds buckets-shape]]]]
    [:fn {:error/message "the keepalive must be shorter than the lifetime, and the leak warning no longer"}
     fits-the-lifetime?]
    [:fn {:error/message ":tls-root-cert is nil when :tls is :off"}
@@ -108,12 +122,22 @@
    never decides how a line is written."
   [:log [fn? {:error/message "should be the app's log function, (log level event data), made by logbook"}]])
 
+(def meter-entry
+  "The app's meter, made by meter's make-meter: the functions that count
+   take it under :meter in their options and declare cellar's metrics on
+   it. A value make-meter didn't make is refused by meter
+   (:meter/not-a-meter)."
+  [:meter [some? {:error/message "should be the app's meter, made by meter.api/make-meter"}]])
+
 (def pool-options-shape
   "start-pool!'s options. :log: the app's log; HikariCP's and PgJDBC's own
    lines about the pool (its start and stop, a leak warning, a connection
-   that failed) are written to it, as :cellar/pool-said."
+   that failed) are written to it, as :cellar/pool-said. :meter: the app's
+   meter, holding no other pool's metrics; the pool's are declared on it
+   (cellar.queries.metrics)."
   [:map {:closed true}
-   log-entry])
+   log-entry
+   meter-entry])
 
 (def transaction-options-shape
   "run-in-transaction!'s options. :read-only?: true, Postgres refuses every
@@ -155,9 +179,12 @@
    :stop-wait-ms: how long stop-listening! waits for the thread to end.
    :log: the app's log; a break in listening (:cellar/listening-broke) and
    a failure of :on-notifications or :on-reconnect
-   (:cellar/listener-function-failed) are written to it."
+   (:cellar/listener-function-failed) are written to it.
+   :meter: the app's meter; listening again after a break is counted on it
+   (cellar_listening_reconnects_total)."
   [:map {:closed true}
    log-entry
+   meter-entry
    [:on-notifications fn?]
    [:on-reconnect fn?]
    [:batch-window-ms [:int {:min 0}]]

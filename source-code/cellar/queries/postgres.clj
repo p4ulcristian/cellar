@@ -15,6 +15,7 @@
    run-in-transaction! hands its function: the same calls work in both."
   (:require
    [clojure.java.io :as io]
+   [cellar.queries.metrics :as metrics]
    [cellar.queries.params :as params]
    [cellar.queries.pool-lines :as pool-lines]
    [cellar.queries.rows :as rows]
@@ -61,8 +62,10 @@
    (cellar.settings/settings-shape, every key required, checked first).
    Options, every key required (cellar.settings/pool-options-shape): :log,
    the app's log, which HikariCP's and PgJDBC's own lines about this pool
-   are written to (:cellar/pool-said, cellar.queries.pool-lines). Returns
-   the pool."
+   are written to (:cellar/pool-said, cellar.queries.pool-lines); :meter,
+   the app's meter, which the pool's metrics are declared on first and
+   counted into (cellar.queries.metrics). Returns the pool, carrying the
+   meter."
   [db-settings options]
   (settings/check-settings db-settings)
   (settings/check-pool-options options)
@@ -70,10 +73,15 @@
                 connection-wait-ms connection-check-wait-ms connection-max-lifetime-ms
                 connection-keepalive-every-ms leak-warning-after-ms
                 connect-timeout-seconds read-timeout-seconds tcp-keepalive? time-zone]} db-settings
-        pool-name (pool-lines/make-pool-name database)]
+        pool-name (pool-lines/make-pool-name database)
+        meter     (:meter options)
+        holder    (atom nil)]
     (when (and tls-root-cert (not (.canRead (io/file tls-root-cert))))
       (throw (ex-info (str ":tls-root-cert names no file that can be read: " tls-root-cert)
                       {:type :cellar/bad-setting :setting :tls-root-cert :value tls-root-cert})))
+    ;; before anything connects: a meter that holds another pool's metrics,
+    ;; or isn't one, is refused here
+    (metrics/declare-pool-metrics! meter db-settings holder)
     (let [config (doto (HikariConfig.)
                    (.setJdbcUrl (connection/jdbc-url {:dbtype "postgresql" :host host :port port :dbname database}))
                    (.setUsername user)
@@ -110,6 +118,8 @@
                    (.setIsolateInternalQueries false)
                    (.setAllowPoolSuspension false)
                    (.setRegisterMbeans false)
+                   ;; the wait for a connection, its use and the timeouts, on the app's meter
+                   (.setMetricsTrackerFactory (metrics/make-tracker-factory meter))
                    (.addDataSourceProperty "ApplicationName" (str "cellar-" database))
                    (.addDataSourceProperty "prepareThreshold" "5")
                    (.addDataSourceProperty "defaultRowFetchSize" "0"))]
@@ -118,8 +128,11 @@
         (.addDataSourceProperty config k v))
       (pool-lines/add-pool! pool-name (:log options))
       (try
-        {:cellar/datasource (pool-lines/call-with-pool-on-thread pool-name #(HikariDataSource. config))
-         :cellar/pool-name  pool-name}
+        (let [datasource (pool-lines/call-with-pool-on-thread pool-name #(HikariDataSource. config))]
+          (reset! holder datasource)
+          {:cellar/datasource datasource
+           :cellar/pool-name  pool-name
+           :cellar/meter      meter})
         (catch Throwable e
           (pool-lines/remove-pool! pool-name)
           (throw e))))))
@@ -146,10 +159,12 @@
 (defn make-query-from-sql-file
   "A query from a .sql file on the classpath, read now: a missing file fails
    when the namespace that defs the query loads. A changed file is read
-   again when the def is evaluated again."
+   again when the def is evaluated again. Its path is noted, for the
+   metrics of a pool started after (cellar.queries.metrics)."
   [path]
   (let [url (or (io/resource path)
                 (throw (ex-info (str "No SQL file " path) {:type :cellar/missing-file :path path})))]
+    (metrics/note-query-name! path)
     (assoc (params/turn-sql-text-into-statement (slurp url))
            :cellar/path path
            :cellar/tables-read (atom nil))))
@@ -157,8 +172,9 @@
 (defn make-query-from-sql-text
   "A query from SQL text made by code, not read from a file: for statements
    code makes from data (a table's statements, made from its map).
-   The name stands where a file's path would, in errors."
+   The name stands where a file's path would, in errors and the metrics."
   [query-name sql-text]
+  (metrics/note-query-name! query-name)
   (assoc (params/turn-sql-text-into-statement sql-text)
          :cellar/path query-name
          :cellar/tables-read (atom nil)))
@@ -166,23 +182,30 @@
 (defn- run-on-connection
   "Rows as a vector when the statement returns rows, else {:count n}. With
    :max-rows, Postgres sends at most that many rows. A query run for its
-   rows (:rows? true) notes the tables it reads, for run-and-list-tables-read."
-  [^Connection connection query params {:keys [max-rows rows?]}]
+   rows (:rows? true) notes the tables it reads, for run-and-list-tables-read.
+   Its time, from sending it to its last row read, failed or not, is
+   recorded on the meter by its name."
+  [^Connection connection meter query params {:keys [max-rows rows?]}]
   (when rows?
     (tables-read/note-tables-of-query! connection query))
-  (let [path   (:cellar/path query)
-        values (mapv rows/turn-param-value-into-jdbc-value (params/list-param-values query params path))]
-    (with-open [^PreparedStatement statement (jdbc/prepare connection (into [(:text-with-question-marks query)] values))]
-      (when max-rows (.setMaxRows statement (int max-rows)))
-      (if (.execute statement)
-        (with-open [rs (.getResultSet statement)]
-          (rows/list-rows-in-result-set rs path))
-        {:count (.getLargeUpdateCount statement)}))))
+  (let [path    (:cellar/path query)
+        values  (mapv rows/turn-param-value-into-jdbc-value (params/list-param-values query params path))
+        started (System/nanoTime)]
+    (try
+      (with-open [^PreparedStatement statement (jdbc/prepare connection (into [(:text-with-question-marks query)] values))]
+        (when max-rows (.setMaxRows statement (int max-rows)))
+        (if (.execute statement)
+          (with-open [rs (.getResultSet statement)]
+            (rows/list-rows-in-result-set rs path))
+          {:count (.getLargeUpdateCount statement)}))
+      (finally
+        (metrics/record-query! meter path started)))))
 
 (defn- run-query [pool-or-transaction query params options]
-  (if-let [connection (:cellar/connection pool-or-transaction)]
-    (run-on-connection connection query params options)
-    (call-with-connection pool-or-transaction #(run-on-connection % query params options))))
+  (let [meter (:cellar/meter pool-or-transaction)]
+    (if-let [connection (:cellar/connection pool-or-transaction)]
+      (run-on-connection connection meter query params options)
+      (call-with-connection pool-or-transaction #(run-on-connection % meter query params options)))))
 
 (defn- throw-when-no-rows [result query]
   (when-not (vector? result)
@@ -228,4 +251,4 @@
     (call-with-connection pool-or-transaction
                           (fn [connection]
                             (jdbc/with-transaction [connection connection {:read-only (:read-only? options)}]
-                              (f {:cellar/connection connection}))))))
+                              (f {:cellar/connection connection :cellar/meter (:cellar/meter pool-or-transaction)}))))))

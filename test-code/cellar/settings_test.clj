@@ -20,20 +20,20 @@
 
 (deftest the-settings-are-every-one-required
   (testing "a missing setting is refused, each named, before anything connects"
-    (let [{:keys [type errors]} (find-refusal #(cellar/start-pool! (dissoc settings :lock-timeout-ms :connection-wait-ms :tls-root-cert) test-settings/pool-options))]
+    (let [{:keys [type errors]} (find-refusal #(cellar/start-pool! (dissoc settings :lock-timeout-ms :connection-wait-ms :tls-root-cert) (test-settings/make-pool-options)))]
       (is (= :cellar/bad-settings type))
       (is (= #{:lock-timeout-ms :connection-wait-ms :tls-root-cert} (set (keys errors))))))
   (testing "an unknown one too"
-    (is (= {:pool-szie ["disallowed key"]} (:errors (find-refusal #(cellar/start-pool! (assoc settings :pool-szie 3) test-settings/pool-options))))))
+    (is (= {:pool-szie ["disallowed key"]} (:errors (find-refusal #(cellar/start-pool! (assoc settings :pool-szie 3) (test-settings/make-pool-options)))))))
   (testing "a value HikariCP would change with only a log line is refused"
-    (is (contains? (:errors (find-refusal #(cellar/start-pool! (assoc settings :connection-max-lifetime-ms 20000) test-settings/pool-options)))
+    (is (contains? (:errors (find-refusal #(cellar/start-pool! (assoc settings :connection-max-lifetime-ms 20000) (test-settings/make-pool-options))))
                    :connection-max-lifetime-ms))
     (is (= :cellar/bad-settings
-           (:type (find-refusal #(cellar/start-pool! (assoc settings :connection-keepalive-every-ms 1800000) test-settings/pool-options)))))
+           (:type (find-refusal #(cellar/start-pool! (assoc settings :connection-keepalive-every-ms 1800000) (test-settings/make-pool-options))))))
     (is (= :cellar/bad-settings
-           (:type (find-refusal #(cellar/start-pool! (assoc settings :leak-warning-after-ms 1000) test-settings/pool-options))))))
+           (:type (find-refusal #(cellar/start-pool! (assoc settings :leak-warning-after-ms 1000) (test-settings/make-pool-options)))))))
   (testing "a root certificate is only for :verified"
-    (is (= :cellar/bad-settings (:type (find-refusal #(cellar/start-pool! (assoc settings :tls-root-cert "/tmp/root.crt") test-settings/pool-options)))))))
+    (is (= :cellar/bad-settings (:type (find-refusal #(cellar/start-pool! (assoc settings :tls-root-cert "/tmp/root.crt") (test-settings/make-pool-options))))))))
 
 (def ^:private a-table
   {:table     :things
@@ -43,16 +43,26 @@
    :on-change nil})
 
 (deftest the-options-are-every-one-required
-  (testing "start-pool! takes the app's log, before anything connects"
-    (is (= {:type :cellar/bad-options :errors {:log ["missing required key"]}}
-           (find-refusal #(cellar/start-pool! settings {})))))
+  (testing "start-pool! takes the app's log and meter, before anything connects"
+    (is (= {:type :cellar/bad-options :errors {:log ["missing required key"] :meter ["missing required key"]}}
+           (find-refusal #(cellar/start-pool! settings {}))))
+    (is (= {:type :cellar/bad-options :errors {:meter ["should be the app's meter, made by meter.api/make-meter"]}}
+           (find-refusal #(cellar/start-pool! settings (assoc (test-settings/make-pool-options) :meter nil)))))
+    (is (= {:type :meter/not-a-meter}
+           (find-refusal #(cellar/start-pool! settings (assoc (test-settings/make-pool-options) :meter {}))))))
+  (testing "the histograms' buckets are settings, meter checks they go up"
+    (is (= {:metric-buckets ["missing required key"]}
+           (:errors (find-refusal #(cellar/start-pool! (dissoc settings :metric-buckets) (test-settings/make-pool-options))))))
+    (is (= :meter/bad-metrics
+           (:type (find-refusal #(cellar/start-pool! (assoc-in settings [:metric-buckets :query-seconds] [1 1])
+                                                     (test-settings/make-pool-options)))))))
   (testing "run-in-transaction! says :read-only?"
     (is (= {:type :cellar/bad-options :errors {:read-only? ["missing required key"]}}
            (find-refusal #(cellar/run-in-transaction! nil {} (fn [_]))))))
   (testing "start-listening! says each of its numbers and both functions"
     (let [{:keys [type errors]} (find-refusal #(cellar/start-listening! nil "things" {:on-notifications (fn [_])}))]
       (is (= :cellar/bad-options type))
-      (is (= #{:log :on-reconnect :batch-window-ms :check-stopped-every-ms :reconnect-after-ms :stop-wait-ms}
+      (is (= #{:log :meter :on-reconnect :batch-window-ms :check-stopped-every-ms :reconnect-after-ms :stop-wait-ms}
              (set (keys errors))))))
   (testing "a function that writes a line takes the app's log, a function"
     (is (= {:type :cellar/bad-options :errors {:log ["missing required key"]}}
@@ -106,7 +116,7 @@
                                           :connection-wait-ms 7000 :connection-check-wait-ms 3000
                                           :connection-max-lifetime-ms 600000 :connection-keepalive-every-ms 60000
                                           :leak-warning-after-ms 20000
-                                          :lock-timeout-ms 4000 :idle-in-transaction-timeout-ms 90000) test-settings/pool-options)]
+                                          :lock-timeout-ms 4000 :idle-in-transaction-timeout-ms 90000) (test-settings/make-pool-options))]
       (try
         (testing "HikariCP has each, unchanged"
           (let [^HikariDataSource datasource (:cellar/datasource pool)]

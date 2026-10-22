@@ -32,6 +32,10 @@
                          :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}
                          :log          log})   ; the app's log function (logbook's)
 
+   start-pool! and start-listening! take the app's meter under :meter and
+   count on it (cellar.queries.metrics): the pool, every query's time by
+   its name, a listener listening again.
+
    cellar writes no line itself: the functions that have something to say
    (start-pool!, migrate!, start-listening!, run-and-list-tables-read) take
    the app's log, (log level event data), under :log in their options.
@@ -115,12 +119,20 @@
       :connect-timeout-seconds 10 :read-timeout-seconds :none :tcp-keepalive? false
       :statement-timeout-ms 30000 :lock-timeout-ms :none
       :idle-in-transaction-timeout-ms :none
-      :time-zone \"UTC\"}
+      :time-zone \"UTC\"
+      :metric-buckets {:query-seconds              [0.001 0.005 0.025 0.1 0.5 2.5 10]
+                       :connection-acquire-seconds [0.001 0.01 0.1 1 10]
+                       :connection-usage-seconds   [0.001 0.01 0.1 1 10 60]}}
 
-   Options, every key required: {:log log}, the app's log, which
-   HikariCP's and PgJDBC's own lines about this pool are written to, as
-   :cellar/pool-said (its start and stop, a leak warning, a connection that
-   failed), with the pool's name, the logger's and the message.
+   Options, every key required: {:log log :meter meter}. :log, the app's
+   log, which HikariCP's and PgJDBC's own lines about this pool are written
+   to, as :cellar/pool-said (its start and stop, a leak warning, a
+   connection that failed), with the pool's name, the logger's and the
+   message. :meter, the app's meter, holding no other pool's metrics:
+   cellar's are declared on it before anything connects (the pool's
+   connections and waiting threads, read; the wait for a connection, its
+   use and the timeouts; every query's time by its name, the names of the
+   queries made by then as the set; cellar.queries.metrics).
 
    Returns the pool."
   [db-settings options]
@@ -193,6 +205,7 @@
    long as it runs. Options, every key required:
 
      {:log                    log    ; the app's: a break, or a failure of either function, is written to it
+      :meter                  meter  ; the app's: listening again after a break is counted on it
       :on-notifications       f      ; (f [{:channel :payload} …]) for each batch
       :on-reconnect           f      ; (f) after a break, listening again: what came in between was missed
       :batch-window-ms        50     ; after the first notification, how long more join its batch
@@ -298,7 +311,7 @@
   (sql/call-with-connection
    pool
    (fn [connection]
-     (let [on-connection {:cellar/connection connection}]
+     (let [on-connection {:cellar/connection connection :cellar/meter (:cellar/meter pool)}]
        (try
          (set-part-limits! on-connection options false)
          (doseq [statement slow]

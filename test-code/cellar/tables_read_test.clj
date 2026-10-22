@@ -68,6 +68,7 @@
           heard    (promise)
           lines    (atom [])
           listener (database/start-listening! pool "cellar_test" {:log                    (test-settings/make-log lines)
+                                                                      :meter                  (:cellar/meter pool)
                                                                       :on-notifications       #(do (deliver heard %)
                                                                                                    (throw (RuntimeException. "the app's own failure")))
                                                                       :on-reconnect           (fn [])

@@ -1,5 +1,7 @@
 # Every value that sets behaviour is a setting; no hidden defaults
 
+> **Changed in part** by [The pool and every query are counted on the app's meter](2026-10-23-the-pool-and-every-query-are-counted-on-the-apps-meter.md) (2026-10-23, v0.4.0): the pool's settings gain `:metric-buckets`, required.
+
 > **Changed in part** by [HikariCP's and PgJDBC's lines go to the log the pool was given](2026-10-23-the-drivers-lines-go-to-the-pools-log.md) (2026-10-23, v0.3.0): the pool is named `cellar-<database>-<n>`, unique in the JVM (its connections' `ApplicationName` stays `cellar-<database>`); `start-pool!` takes `{:log log}`.
 
 > **Changed in part** by [The app passes its log](2026-10-22-the-app-passes-its-log.md) (2026-10-22, v0.2.0): the listener writes to the app's log, `:log` in its options, not to `System.Logger` `cellar`.

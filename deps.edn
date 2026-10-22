@@ -9,6 +9,8 @@
   ;; HikariCP writes through SLF4J: this hands its lines to java.util.logging,
   ;; where cellar sends them to the pool's log (cellar.queries.pool-lines)
   org.slf4j/slf4j-jdk14             {:mvn/version "2.0.17"}
+  ;; the app's meter, handed in: the pool's metrics and every query's time
+  io.github.p4ulcristian/meter      {:git/tag "v0.1.2" :git/sha "a0a977b"}
   ;; jsonb columns and Postgres's query plans
   metosin/jsonista                  {:mvn/version "1.0.2"}
   ;; the settings, options and table maps, checked before anything runs

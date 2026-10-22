@@ -11,7 +11,7 @@
 
 (defn- start-pool! [lines pool-size leak-warning-after-ms]
   (cellar/start-pool! (assoc (test-settings/make-pool-settings pool-size 5000) :leak-warning-after-ms leak-warning-after-ms)
-                      {:log (test-settings/make-log lines)}))
+                      {:log (test-settings/make-log lines) :meter (test-settings/make-meter)}))
 
 (defn- hold-a-connection! [pool ms]
   (cellar/run-in-transaction! pool {:read-only? true} (fn [_] (Thread/sleep (long ms)))))

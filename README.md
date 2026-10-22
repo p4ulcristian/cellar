@@ -13,14 +13,15 @@ is a change, given as data and run once.
 io.github.p4ulcristian/cellar {:git/tag "v0.3.0" :git/sha "d525e8b"}
 ```
 
-Needs only next.jdbc, PgJDBC, HikariCP (with slf4j-jdk14), jsonista and malli. One public namespace,
+Needs only next.jdbc, PgJDBC, HikariCP (with slf4j-jdk14), jsonista, malli
+and [meter](https://github.com/p4ulcristian/meter) (the app's metrics, handed in). One public namespace,
 `cellar.api`; its parts are `cellar.queries.*` and `cellar.tables.*`.
 
 ## The api
 
 | function | does |
 |---|---|
-| `start-pool!` `stop-pool!` `settings-shape` | a HikariCP pool; every setting required (TLS, the pool's waits and lifetimes, the network's timeouts, the session's limits and time zone), and the app's log, which HikariCP's and PgJDBC's own lines about the pool go to; the settings as a malli shape |
+| `start-pool!` `stop-pool!` `settings-shape` | a HikariCP pool; every setting required (TLS, the pool's waits and lifetimes, the network's timeouts, the session's limits and time zone, the histograms' buckets), the app's log, which HikariCP's and PgJDBC's own lines about the pool go to, and the app's meter, which the pool's metrics go to; the settings as a malli shape |
 | `make-query-from-sql-file` `make-query-from-sql-text` | a query from a `.sql` file on the classpath (read when its `def` loads), or from SQL text code makes |
 | `find-rows` `find-one-row` `run-statement!` | run a query on a pool or a transaction |
 | `run-in-transaction!` | `(f transaction)` in one transaction, kept or undone; `{:read-only? true}` refuses writes, `false` written out otherwise |
@@ -32,7 +33,7 @@ Needs only next.jdbc, PgJDBC, HikariCP (with slf4j-jdk14), jsonista and malli. O
 | `turn-table-into-row-shape` | a table's rows as a malli shape |
 | `turn-key-into-column-name` `turn-table-key-into-table-name` `turn-table-name-into-table-key` | names: `:order/shop-id` ↔ `order__shop_id`, `:billing/invoices` ↔ `billing.invoices` |
 | `run-and-list-tables-read` | runs a function and returns what it returned with the tables its queries read, as Postgres's planner says; `{:log log}` first |
-| `start-listening!` `stop-listening!` | `LISTEN` on a channel, notifications in batches, a reconnect said; its batch window, waits and reconnect delay written out |
+| `start-listening!` `stop-listening!` | `LISTEN` on a channel, notifications in batches, a reconnect said and counted; its batch window, waits and reconnect delay written out |
 
 ```clojure
 (require '[cellar.api :as cellar])
@@ -46,8 +47,12 @@ Needs only next.jdbc, PgJDBC, HikariCP (with slf4j-jdk14), jsonista and malli. O
                                :connect-timeout-seconds 10 :read-timeout-seconds :none :tcp-keepalive? false
                                :statement-timeout-ms 30000 :lock-timeout-ms :none
                                :idle-in-transaction-timeout-ms :none
-                               :time-zone "UTC"}
-                              {:log log}))   ; the app's: HikariCP's and PgJDBC's lines about this pool
+                               :time-zone "UTC"
+                               :metric-buckets {:query-seconds              [0.001 0.005 0.025 0.1 0.5 2.5 10]
+                                                :connection-acquire-seconds [0.001 0.01 0.1 1 10]
+                                                :connection-usage-seconds   [0.001 0.01 0.1 1 10 60]}}
+                              {:log   log     ; the app's: HikariCP's and PgJDBC's lines about this pool
+                               :meter meter}))  ; the app's: this pool's metrics, every query's time
 
 ;; a column is [key type] or [key type options], and says only the options it has:
 ;; an unsaid one is no or none (NOT NULL, not unique, not a primary key, no default, no reference)
@@ -117,6 +122,27 @@ each other's. cellar brings slf4j-jdk14 for it: the app adds no SLF4J
 backend, and one of its own takes HikariCP's lines away from the log, which
 `:cellar/pool-lines-elsewhere` says
 ([how](decisions/2026-10-23-the-drivers-lines-go-to-the-pools-log.md)).
+
+`start-pool!` and `start-listening!` take the app's meter, as
+[meter](https://github.com/p4ulcristian/meter) makes it, under `:meter`,
+and declare cellar's metrics on it
+([why](decisions/2026-10-23-the-pool-and-every-query-are-counted-on-the-apps-meter.md)):
+
+| metric | type | what |
+|---|---|---|
+| `cellar_pool_connections{state}` | gauge, read | `active`, `idle` |
+| `cellar_pool_waiting_threads` | gauge, read | threads waiting for a connection |
+| `cellar_connection_acquire_seconds` | histogram | the wait for a connection |
+| `cellar_connection_usage_seconds` | histogram | how long one was held |
+| `cellar_connection_timeouts_total` | counter | waits past `:connection-wait-ms` |
+| `cellar_query_seconds{query}` | histogram | every query run, by its name, failed or not |
+| `cellar_listening_reconnects_total` | counter | a listener listening again after a break |
+
+A query's name is its file's path (or the name `make-query-from-sql-text`
+was given); every query made is noted, and `start-pool!` declares those
+made by then as the `query` label's set: a query made after it is counted
+as `"other"`. A meter holds one pool's metrics: a second pool takes a
+meter of its own.
 
 A table map's `:gates`, nil or SQL conditions for all four operations
 (`{:read "…" :insert "…" :update "…" :delete "false"}`), become row-level
