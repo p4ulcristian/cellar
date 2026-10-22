@@ -108,6 +108,13 @@
    never decides how a line is written."
   [:log [fn? {:error/message "should be the app's log function, (log level event data), made by logbook"}]])
 
+(def pool-options-shape
+  "start-pool!'s options. :log: the app's log; HikariCP's and PgJDBC's own
+   lines about the pool (its start and stop, a leak warning, a connection
+   that failed) are written to it, as :cellar/pool-said."
+  [:map {:closed true}
+   log-entry])
+
 (def transaction-options-shape
   "run-in-transaction!'s options. :read-only?: true, Postgres refuses every
    write in it."
@@ -228,6 +235,9 @@
 
 (defn check-settings [settings]
   (check-data-for-shape "The settings" :cellar/bad-settings settings-shape settings))
+
+(defn check-pool-options [options]
+  (check-data-for-shape "The options" :cellar/bad-options pool-options-shape options))
 
 (defn check-transaction-options [options]
   (check-data-for-shape "The options" :cellar/bad-options transaction-options-shape options))

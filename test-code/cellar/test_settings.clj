@@ -29,9 +29,6 @@
    :idle-in-transaction-timeout-ms :none
    :time-zone                      "UTC"})
 
-(defn start-pool! [pool-size statement-timeout-ms]
-  (cellar/start-pool! (make-pool-settings pool-size statement-timeout-ms)))
-
 (defn make-log
   "A log function as an app's logbook makes one, keeping each call's
    [level event data] in the atom lines."
@@ -43,6 +40,13 @@
   (atom []))
 
 (def log (make-log lines-logged))
+
+(def pool-options
+  "start-pool!'s options: the tests' log."
+  {:log log})
+
+(defn start-pool! [pool-size statement-timeout-ms]
+  (cellar/start-pool! (make-pool-settings pool-size statement-timeout-ms) pool-options))
 
 (def migrate-options
   {:instant-part {:statement-timeout-ms 10000 :lock-timeout-ms 5000}

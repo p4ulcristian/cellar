@@ -6,6 +6,9 @@
  {com.github.seancorfield/next.jdbc {:mvn/version "1.4.70"}
   org.postgresql/postgresql         {:mvn/version "42.7.14"}
   com.zaxxer/HikariCP               {:mvn/version "7.1.0"}
+  ;; HikariCP writes through SLF4J: this hands its lines to java.util.logging,
+  ;; where cellar sends them to the pool's log (cellar.queries.pool-lines)
+  org.slf4j/slf4j-jdk14             {:mvn/version "2.0.17"}
   ;; jsonb columns and Postgres's query plans
   metosin/jsonista                  {:mvn/version "1.0.2"}
   ;; the settings, options and table maps, checked before anything runs
@@ -14,8 +17,6 @@
  :aliases
  {;; the tests:  clojure -X:test  (the Postgres ones need CELLAR_TEST_PORT, see README.md)
   :test {:extra-paths ["test-code"]
-         :extra-deps  {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}
-                       ;; HikariCP logs through SLF4J; tests pick no logger
-                       org.slf4j/slf4j-nop {:mvn/version "2.0.17"}}
+         :extra-deps  {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :exec-fn     cognitect.test-runner.api/test
          :exec-args   {:dirs ["test-code"]}}}}

@@ -1,5 +1,7 @@
 # Every value that sets behaviour is a setting; no hidden defaults
 
+> **Changed in part** by [HikariCP's and PgJDBC's lines go to the log the pool was given](2026-10-23-the-drivers-lines-go-to-the-pools-log.md) (2026-10-23, v0.3.0): the pool is named `cellar-<database>-<n>`, unique in the JVM (its connections' `ApplicationName` stays `cellar-<database>`); `start-pool!` takes `{:log log}`.
+
 > **Changed in part** by [The app passes its log](2026-10-22-the-app-passes-its-log.md) (2026-10-22, v0.2.0): the listener writes to the app's log, `:log` in its options, not to `System.Logger` `cellar`.
 
 > **Changed in part** by [A column says only the options it has; a table map still writes out its keys](2026-10-22-a-column-says-only-the-options-it-has.md) (2026-10-22, v0.1.3): a column says only the options it has, an unsaid one meaning no or none; a table map still writes out `:indexes`, `:gates` and `:on-change`, and gates all four operations.

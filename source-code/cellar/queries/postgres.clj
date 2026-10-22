@@ -16,6 +16,7 @@
   (:require
    [clojure.java.io :as io]
    [cellar.queries.params :as params]
+   [cellar.queries.pool-lines :as pool-lines]
    [cellar.queries.rows :as rows]
    [cellar.queries.tables-read :as tables-read]
    [cellar.settings :as settings]
@@ -58,20 +59,26 @@
 (defn start-pool!
   "Opens a HikariCP pool of connections to Postgres, as the settings say
    (cellar.settings/settings-shape, every key required, checked first).
-   Returns the pool."
-  [db-settings]
+   Options, every key required (cellar.settings/pool-options-shape): :log,
+   the app's log, which HikariCP's and PgJDBC's own lines about this pool
+   are written to (:cellar/pool-said, cellar.queries.pool-lines). Returns
+   the pool."
+  [db-settings options]
   (settings/check-settings db-settings)
+  (settings/check-pool-options options)
   (let [{:keys [host port database user password tls-root-cert pool-size
                 connection-wait-ms connection-check-wait-ms connection-max-lifetime-ms
                 connection-keepalive-every-ms leak-warning-after-ms
                 connect-timeout-seconds read-timeout-seconds tcp-keepalive? time-zone]} db-settings
-        pool-name (str "cellar-" database)]
+        pool-name (pool-lines/make-pool-name database)]
     (when (and tls-root-cert (not (.canRead (io/file tls-root-cert))))
       (throw (ex-info (str ":tls-root-cert names no file that can be read: " tls-root-cert)
                       {:type :cellar/bad-setting :setting :tls-root-cert :value tls-root-cert})))
     (let [config (doto (HikariConfig.)
                    (.setJdbcUrl (connection/jdbc-url {:dbtype "postgresql" :host host :port port :dbname database}))
                    (.setUsername user)
+                   ;; unique in the JVM: HikariCP's lines and threads carry it,
+                   ;; and it finds their log
                    (.setPoolName pool-name)
                    ;; the settings
                    (.setMaximumPoolSize pool-size)
@@ -103,18 +110,35 @@
                    (.setIsolateInternalQueries false)
                    (.setAllowPoolSuspension false)
                    (.setRegisterMbeans false)
-                   (.addDataSourceProperty "ApplicationName" pool-name)
+                   (.addDataSourceProperty "ApplicationName" (str "cellar-" database))
                    (.addDataSourceProperty "prepareThreshold" "5")
                    (.addDataSourceProperty "defaultRowFetchSize" "0"))]
       (when password (.setPassword config password))
       (doseq [[k v] (tls-properties db-settings)]
         (.addDataSourceProperty config k v))
-      {:cellar/datasource (HikariDataSource. config)})))
+      (pool-lines/add-pool! pool-name (:log options))
+      (try
+        {:cellar/datasource (pool-lines/call-with-pool-on-thread pool-name #(HikariDataSource. config))
+         :cellar/pool-name  pool-name}
+        (catch Throwable e
+          (pool-lines/remove-pool! pool-name)
+          (throw e))))))
 
 (defn stop-pool!
   "Closes the pool's connections."
-  [pool]
-  (.close ^HikariDataSource (:cellar/datasource pool)))
+  [{:cellar/keys [datasource pool-name]}]
+  (try
+    (pool-lines/call-with-pool-on-thread pool-name #(.close ^HikariDataSource datasource))
+    (finally (pool-lines/remove-pool! pool-name))))
+
+(defn call-with-connection
+  "(f connection) on a connection of the pool, closed after; HikariCP's and
+   PgJDBC's lines on this thread meanwhile are the pool's."
+  [pool f]
+  (pool-lines/call-with-pool-on-thread
+   (:cellar/pool-name pool)
+   #(with-open [connection (jdbc/get-connection (:cellar/datasource pool))]
+      (f connection))))
 
 ;; -----------------------------------------------------------------------------
 ;; Queries
@@ -158,8 +182,7 @@
 (defn- run-query [pool-or-transaction query params options]
   (if-let [connection (:cellar/connection pool-or-transaction)]
     (run-on-connection connection query params options)
-    (with-open [connection (jdbc/get-connection (:cellar/datasource pool-or-transaction))]
-      (run-on-connection connection query params options))))
+    (call-with-connection pool-or-transaction #(run-on-connection % query params options))))
 
 (defn- throw-when-no-rows [result query]
   (when-not (vector? result)
@@ -202,6 +225,7 @@
   (settings/check-transaction-options options)
   (if (:cellar/connection pool-or-transaction)
     (f pool-or-transaction)
-    (with-open [connection (jdbc/get-connection (:cellar/datasource pool-or-transaction))]
-      (jdbc/with-transaction [connection connection {:read-only (:read-only? options)}]
-        (f {:cellar/connection connection})))))
+    (call-with-connection pool-or-transaction
+                          (fn [connection]
+                            (jdbc/with-transaction [connection connection {:read-only (:read-only? options)}]
+                              (f {:cellar/connection connection}))))))

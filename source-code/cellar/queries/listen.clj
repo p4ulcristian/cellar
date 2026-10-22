@@ -7,8 +7,8 @@
    missed. A break, and a failure of either function the app hands in, is
    written to the options' :log."
   (:require
-   [cellar.settings :as settings]
-   [next.jdbc :as jdbc])
+   [cellar.queries.postgres :as sql]
+   [cellar.settings :as settings])
   (:import
    (java.sql Connection)
    (org.postgresql PGConnection PGNotification)))
@@ -26,17 +26,19 @@
          (log :error :cellar/listener-function-failed {:cellar/channel channel :error e}))))
 
 (defn- listen-on-one-connection! [pool channel running? again? {:keys [on-notifications on-reconnect] :as options}]
-  (with-open [^Connection connection (jdbc/get-connection (:cellar/datasource pool))]
-    ;; NOTIFY is delivered outside a transaction only
-    (.setAutoCommit connection true)
-    (with-open [statement (.createStatement connection)]
-      (.execute statement (str "LISTEN " channel)))
-    ;; told only once listening again, so nothing falls between
-    (when again? (hand-on! options channel on-reconnect))
-    (let [pg (.unwrap connection PGConnection)]
-      (while @running?
-        (when-let [batch (seq (read-batch pg options))]
-          (hand-on! options channel on-notifications (vec batch)))))))
+  (sql/call-with-connection
+   pool
+   (fn [^Connection connection]
+     ;; NOTIFY is delivered outside a transaction only
+     (.setAutoCommit connection true)
+     (with-open [statement (.createStatement connection)]
+       (.execute statement (str "LISTEN " channel)))
+     ;; told only once listening again, so nothing falls between
+     (when again? (hand-on! options channel on-reconnect))
+     (let [pg (.unwrap connection PGConnection)]
+       (while @running?
+         (when-let [batch (seq (read-batch pg options))]
+           (hand-on! options channel on-notifications (vec batch))))))))
 
 (defn start-listening!
   "LISTENs on a channel (a plain Postgres name), as the options say

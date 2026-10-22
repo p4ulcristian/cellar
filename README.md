@@ -13,14 +13,14 @@ is a change, given as data and run once.
 io.github.p4ulcristian/cellar {:git/tag "v0.2.0" :git/sha "ec613de"}
 ```
 
-Needs only next.jdbc, PgJDBC, HikariCP, jsonista and malli. One public namespace,
+Needs only next.jdbc, PgJDBC, HikariCP (with slf4j-jdk14), jsonista and malli. One public namespace,
 `cellar.api`; its parts are `cellar.queries.*` and `cellar.tables.*`.
 
 ## The api
 
 | function | does |
 |---|---|
-| `start-pool!` `stop-pool!` `settings-shape` | a HikariCP pool; every setting required (TLS, the pool's waits and lifetimes, the network's timeouts, the session's limits and time zone); the settings as a malli shape |
+| `start-pool!` `stop-pool!` `settings-shape` | a HikariCP pool; every setting required (TLS, the pool's waits and lifetimes, the network's timeouts, the session's limits and time zone), and the app's log, which HikariCP's and PgJDBC's own lines about the pool go to; the settings as a malli shape |
 | `make-query-from-sql-file` `make-query-from-sql-text` | a query from a `.sql` file on the classpath (read when its `def` loads), or from SQL text code makes |
 | `find-rows` `find-one-row` `run-statement!` | run a query on a pool or a transaction |
 | `run-in-transaction!` | `(f transaction)` in one transaction, kept or undone; `{:read-only? true}` refuses writes, `false` written out otherwise |
@@ -46,7 +46,8 @@ Needs only next.jdbc, PgJDBC, HikariCP, jsonista and malli. One public namespace
                                :connect-timeout-seconds 10 :read-timeout-seconds :none :tcp-keepalive? false
                                :statement-timeout-ms 30000 :lock-timeout-ms :none
                                :idle-in-transaction-timeout-ms :none
-                               :time-zone "UTC"}))
+                               :time-zone "UTC"}
+                              {:log log}))   ; the app's: HikariCP's and PgJDBC's lines about this pool
 
 ;; a column is [key type] or [key type options], and says only the options it has:
 ;; an unsaid one is no or none (NOT NULL, not unique, not a primary key, no default, no reference)
@@ -102,13 +103,20 @@ one is the safe answer
 ([why](decisions/2026-10-22-a-column-says-only-the-options-it-has.md));
 an unknown option is still refused.
 
-cellar writes no line itself: `migrate!`, `start-listening!` and
-`run-and-list-tables-read` take the app's log function,
+cellar writes no line itself: `start-pool!`, `migrate!`, `start-listening!`
+and `run-and-list-tables-read` take the app's log function,
 `(log level event data)` as [logbook](https://github.com/p4ulcristian/logbook)
 makes it, under `:log` (`:cellar/planned`, `:cellar/listening-broke`,
 `:cellar/listener-function-failed`, `:cellar/tables-read-unknown`;
-[why](decisions/2026-10-22-the-app-passes-its-log.md)). HikariCP's own lines
-still go through SLF4J.
+[why](decisions/2026-10-22-the-app-passes-its-log.md)). HikariCP's and
+PgJDBC's own lines about a pool (its start and stop, a leak warning, a
+connection that failed), info and up, go to the log `start-pool!` was given,
+as `:cellar/pool-said` with the pool's name, the logger's and the message;
+each pool's to its own, so two pools, or two apps, in one JVM don't hear
+each other's. cellar brings slf4j-jdk14 for it: the app adds no SLF4J
+backend, and one of its own takes HikariCP's lines away from the log, which
+`:cellar/pool-lines-elsewhere` says
+([how](decisions/2026-10-23-the-drivers-lines-go-to-the-pools-log.md)).
 
 A table map's `:gates`, nil or SQL conditions for all four operations
 (`{:read "…" :insert "…" :update "…" :delete "false"}`), become row-level

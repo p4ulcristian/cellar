@@ -1,5 +1,7 @@
 # The app passes its log; cellar never decides how a line is written
 
+> **Changed in part** by [HikariCP's and PgJDBC's lines go to the log the pool was given](2026-10-23-the-drivers-lines-go-to-the-pools-log.md) (2026-10-23, v0.3.0): `start-pool!` takes `{:log log}`, and HikariCP's and PgJDBC's own lines about a pool go to it, through slf4j-jdk14 and one java.util.logging handler that finds each line's pool by its name.
+
 > Changes in part [Every value that sets behaviour is a setting](2026-10-22-every-value-that-sets-behaviour-is-a-setting.md) (the listener logged to `System.Logger` `cellar`) and [A query knows the tables it reads](2026-10-22-a-query-knows-its-tables-and-postgres-can-be-heard.md) (`run-and-list-tables-read` took only the function). Since v0.2.0.
 
 **Decision:** cellar writes no line itself. Every function that has something to say takes the app's log, `(log level event data)` (logbook's, "A log call is level, event, data"), as a required key, `:log`, in its options, checked by malli as a function (`settings/log-entry`, `:cellar/bad-options` naming `:log`):

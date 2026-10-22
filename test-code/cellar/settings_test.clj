@@ -20,20 +20,20 @@
 
 (deftest the-settings-are-every-one-required
   (testing "a missing setting is refused, each named, before anything connects"
-    (let [{:keys [type errors]} (find-refusal #(cellar/start-pool! (dissoc settings :lock-timeout-ms :connection-wait-ms :tls-root-cert)))]
+    (let [{:keys [type errors]} (find-refusal #(cellar/start-pool! (dissoc settings :lock-timeout-ms :connection-wait-ms :tls-root-cert) test-settings/pool-options))]
       (is (= :cellar/bad-settings type))
       (is (= #{:lock-timeout-ms :connection-wait-ms :tls-root-cert} (set (keys errors))))))
   (testing "an unknown one too"
-    (is (= {:pool-szie ["disallowed key"]} (:errors (find-refusal #(cellar/start-pool! (assoc settings :pool-szie 3)))))))
+    (is (= {:pool-szie ["disallowed key"]} (:errors (find-refusal #(cellar/start-pool! (assoc settings :pool-szie 3) test-settings/pool-options))))))
   (testing "a value HikariCP would change with only a log line is refused"
-    (is (contains? (:errors (find-refusal #(cellar/start-pool! (assoc settings :connection-max-lifetime-ms 20000))))
+    (is (contains? (:errors (find-refusal #(cellar/start-pool! (assoc settings :connection-max-lifetime-ms 20000) test-settings/pool-options)))
                    :connection-max-lifetime-ms))
     (is (= :cellar/bad-settings
-           (:type (find-refusal #(cellar/start-pool! (assoc settings :connection-keepalive-every-ms 1800000))))))
+           (:type (find-refusal #(cellar/start-pool! (assoc settings :connection-keepalive-every-ms 1800000) test-settings/pool-options)))))
     (is (= :cellar/bad-settings
-           (:type (find-refusal #(cellar/start-pool! (assoc settings :leak-warning-after-ms 1000)))))))
+           (:type (find-refusal #(cellar/start-pool! (assoc settings :leak-warning-after-ms 1000) test-settings/pool-options))))))
   (testing "a root certificate is only for :verified"
-    (is (= :cellar/bad-settings (:type (find-refusal #(cellar/start-pool! (assoc settings :tls-root-cert "/tmp/root.crt"))))))))
+    (is (= :cellar/bad-settings (:type (find-refusal #(cellar/start-pool! (assoc settings :tls-root-cert "/tmp/root.crt") test-settings/pool-options)))))))
 
 (def ^:private a-table
   {:table     :things
@@ -43,6 +43,9 @@
    :on-change nil})
 
 (deftest the-options-are-every-one-required
+  (testing "start-pool! takes the app's log, before anything connects"
+    (is (= {:type :cellar/bad-options :errors {:log ["missing required key"]}}
+           (find-refusal #(cellar/start-pool! settings {})))))
   (testing "run-in-transaction! says :read-only?"
     (is (= {:type :cellar/bad-options :errors {:read-only? ["missing required key"]}}
            (find-refusal #(cellar/run-in-transaction! nil {} (fn [_]))))))
@@ -103,7 +106,7 @@
                                           :connection-wait-ms 7000 :connection-check-wait-ms 3000
                                           :connection-max-lifetime-ms 600000 :connection-keepalive-every-ms 60000
                                           :leak-warning-after-ms 20000
-                                          :lock-timeout-ms 4000 :idle-in-transaction-timeout-ms 90000))]
+                                          :lock-timeout-ms 4000 :idle-in-transaction-timeout-ms 90000) test-settings/pool-options)]
       (try
         (testing "HikariCP has each, unchanged"
           (let [^HikariDataSource datasource (:cellar/datasource pool)]

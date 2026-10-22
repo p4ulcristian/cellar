@@ -33,8 +33,10 @@
                          :log          log})   ; the app's log function (logbook's)
 
    cellar writes no line itself: the functions that have something to say
-   (migrate!, start-listening!, run-and-list-tables-read) take the app's
-   log, (log level event data), under :log in their options.
+   (start-pool!, migrate!, start-listening!, run-and-list-tables-read) take
+   the app's log, (log level event data), under :log in their options.
+   HikariCP's and PgJDBC's own lines go to the log of the pool they are
+   about (cellar.queries.pool-lines).
 
    A table map writes out every key cellar reads (:indexes [] for none,
    :gates and :on-change nil for none); it is open, so another library's
@@ -87,8 +89,7 @@
    [cellar.tables.catalog :as catalog]
    [cellar.tables.desired :as desired]
    [cellar.tables.names :as names]
-   [cellar.tables.plan :as plan]
-   [next.jdbc :as jdbc]))
+   [cellar.tables.plan :as plan]))
 
 ;; -----------------------------------------------------------------------------
 ;; Queries
@@ -116,9 +117,14 @@
       :idle-in-transaction-timeout-ms :none
       :time-zone \"UTC\"}
 
+   Options, every key required: {:log log}, the app's log, which
+   HikariCP's and PgJDBC's own lines about this pool are written to, as
+   :cellar/pool-said (its start and stop, a leak warning, a connection that
+   failed), with the pool's name, the logger's and the message.
+
    Returns the pool."
-  [db-settings]
-  (sql/start-pool! db-settings))
+  [db-settings options]
+  (sql/start-pool! db-settings options))
 
 (defn stop-pool!
   "Closes the pool's connections."
@@ -289,14 +295,16 @@
      {:statement-timeout-ms :none :lock-timeout-ms 5000}"
   [pool {:keys [slow]} options]
   (settings/check-part-options options)
-  (with-open [connection (jdbc/get-connection (:cellar/datasource pool))]
-    (let [on-connection {:cellar/connection connection}]
-      (try
-        (set-part-limits! on-connection options false)
-        (doseq [statement slow]
-          (sql/run-statement! on-connection (turn-statement-into-query statement) {}))
-        (finally
-          (sql/run-statement! on-connection reset-part-limits {}))))))
+  (sql/call-with-connection
+   pool
+   (fn [connection]
+     (let [on-connection {:cellar/connection connection}]
+       (try
+         (set-part-limits! on-connection options false)
+         (doseq [statement slow]
+           (sql/run-statement! on-connection (turn-statement-into-query statement) {}))
+         (finally
+           (sql/run-statement! on-connection reset-part-limits {})))))))
 
 (defn- log-plan [log {:keys [instant slow]}]
   (doseq [[part statements] [[:instant instant] [:slow slow]]
