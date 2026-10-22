@@ -18,6 +18,7 @@
    [cellar.queries.params :as params]
    [cellar.queries.rows :as rows]
    [cellar.queries.tables-read :as tables-read]
+   [cellar.settings :as settings]
    [next.jdbc :as jdbc]
    [next.jdbc.connection :as connection])
   (:import
@@ -27,14 +28,10 @@
 ;; -----------------------------------------------------------------------------
 ;; The pool
 
-(defn- statement-timeout-as-postgres-takes-it
-  "A :statement-timeout-ms as Postgres takes it: :none is 0, no limit."
+(defn- turn-none-into-zero
+  "A limit as Postgres, HikariCP and PgJDBC take it: :none is 0, no limit."
   [value]
-  (cond
-    (= :none value)  0
-    (pos-int? value) value
-    :else (throw (ex-info ":statement-timeout-ms must be a positive integer or :none"
-                          {:type :cellar/bad-setting :setting :statement-timeout-ms :value value}))))
+  (if (= :none value) 0 value))
 
 (defn- tls-properties
   ;; :verified is verify-full: encrypted, and the server's certificate must
@@ -50,41 +47,69 @@
                 {"sslmode"     "verify-full"
                  "sslfactory"  "org.postgresql.ssl.DefaultJavaSSLFactory"})))
 
+(defn- make-session-options
+  "The session's limits, as PgJDBC's options property hands them to
+   Postgres when a connection opens: they hold from its first statement."
+  [{:keys [statement-timeout-ms lock-timeout-ms idle-in-transaction-timeout-ms]}]
+  (str "-c statement_timeout=" (turn-none-into-zero statement-timeout-ms)
+       " -c lock_timeout=" (turn-none-into-zero lock-timeout-ms)
+       " -c idle_in_transaction_session_timeout=" (turn-none-into-zero idle-in-transaction-timeout-ms)))
+
 (defn start-pool!
-  "Opens a HikariCP pool of connections to Postgres. Every setting is
-   required but :password (nil for none) and :tls-root-cert:
-
-     :host :port :database :user :password
-     :tls                  :verified (encrypted, certificate checked) or :off
-     :tls-root-cert        with :verified: a file of certificates to trust
-     :pool-size            a fixed number of connections
-     :statement-timeout-ms Postgres cancels a statement that runs longer; :none for no limit
-     :time-zone            the session's time zone, e.g. \"UTC\"
-
+  "Opens a HikariCP pool of connections to Postgres, as the settings say
+   (cellar.settings/settings-shape, every key required, checked first).
    Returns the pool."
-  [{:keys [host port database user password pool-size statement-timeout-ms time-zone tls-root-cert]
-    :as   db-settings}]
-  (when (and tls-root-cert (not (.canRead (io/file tls-root-cert))))
-    (throw (ex-info (str ":tls-root-cert names no file that can be read: " tls-root-cert)
-                    {:type :cellar/bad-setting :setting :tls-root-cert :value tls-root-cert})))
-  (let [config (doto (HikariConfig.)
-                 (.setJdbcUrl (connection/jdbc-url {:dbtype "postgresql" :host host :port port :dbname database}))
-                 (.setUsername user)
-                 (.setMaximumPoolSize pool-size)
-                 (.setPoolName (str "cellar-" database))
-                 ;; Postgres sets it when a connection opens; :none is 0, so a
-                 ;; limit on the database role can't apply behind the settings' back
-                 (.addDataSourceProperty "options"
-                                         (str "-c statement_timeout="
-                                              (statement-timeout-as-postgres-takes-it statement-timeout-ms)))
-                 ;; run on each new connection: PgJDBC sends the JVM's zone when
-                 ;; it connects, so the zone is set right after; the search path
-                 ;; is only public, so no other schema catches an app's table
-                 (.setConnectionInitSql (str "SET TIME ZONE '" time-zone "'; SET search_path = public")))]
-    (when password (.setPassword config password))
-    (doseq [[k v] (tls-properties db-settings)]
-      (.addDataSourceProperty config k v))
-    {:cellar/datasource (HikariDataSource. config)}))
+  [db-settings]
+  (settings/check-settings db-settings)
+  (let [{:keys [host port database user password tls-root-cert pool-size
+                connection-wait-ms connection-check-wait-ms connection-max-lifetime-ms
+                connection-keepalive-every-ms leak-warning-after-ms
+                connect-timeout-seconds read-timeout-seconds tcp-keepalive? time-zone]} db-settings
+        pool-name (str "cellar-" database)]
+    (when (and tls-root-cert (not (.canRead (io/file tls-root-cert))))
+      (throw (ex-info (str ":tls-root-cert names no file that can be read: " tls-root-cert)
+                      {:type :cellar/bad-setting :setting :tls-root-cert :value tls-root-cert})))
+    (let [config (doto (HikariConfig.)
+                   (.setJdbcUrl (connection/jdbc-url {:dbtype "postgresql" :host host :port port :dbname database}))
+                   (.setUsername user)
+                   (.setPoolName pool-name)
+                   ;; the settings
+                   (.setMaximumPoolSize pool-size)
+                   (.setConnectionTimeout connection-wait-ms)
+                   (.setValidationTimeout connection-check-wait-ms)
+                   (.setMaxLifetime (turn-none-into-zero connection-max-lifetime-ms))
+                   (.setKeepaliveTime (turn-none-into-zero connection-keepalive-every-ms))
+                   (.setLeakDetectionThreshold (turn-none-into-zero leak-warning-after-ms))
+                   (.addDataSourceProperty "connectTimeout" (str connect-timeout-seconds))
+                   (.addDataSourceProperty "socketTimeout" (str (turn-none-into-zero read-timeout-seconds)))
+                   (.addDataSourceProperty "tcpKeepAlive" (str tcp-keepalive?))
+                   (.addDataSourceProperty "options" (make-session-options db-settings))
+                   ;; run on each new connection: PgJDBC sends the JVM's zone when
+                   ;; it connects, so the zone is set right after; the search path
+                   ;; is only public, so no other schema catches an app's table
+                   (.setConnectionInitSql (str "SET TIME ZONE '" time-zone "'; SET search_path = public"))
+                   ;; fixed, each with its reason in the decision "every value that
+                   ;; sets behaviour is a setting": a fixed pool (no idle connections
+                   ;; closed); start-pool! fails when it can't connect; statements
+                   ;; commit by themselves outside run-in-transaction!; read
+                   ;; committed, whatever the role's default; the driver's own
+                   ;; tuning, which changes no answer
+                   (.setMinimumIdle pool-size)
+                   (.setIdleTimeout 0)
+                   (.setInitializationFailTimeout 1)
+                   (.setAutoCommit true)
+                   (.setReadOnly false)
+                   (.setTransactionIsolation "TRANSACTION_READ_COMMITTED")
+                   (.setIsolateInternalQueries false)
+                   (.setAllowPoolSuspension false)
+                   (.setRegisterMbeans false)
+                   (.addDataSourceProperty "ApplicationName" pool-name)
+                   (.addDataSourceProperty "prepareThreshold" "5")
+                   (.addDataSourceProperty "defaultRowFetchSize" "0"))]
+      (when password (.setPassword config password))
+      (doseq [[k v] (tls-properties db-settings)]
+        (.addDataSourceProperty config k v))
+      {:cellar/datasource (HikariDataSource. config)})))
 
 (defn stop-pool!
   "Closes the pool's connections."
@@ -171,11 +196,12 @@
   "Runs (f transaction) in one transaction: everything f runs on the
    transaction is kept when f returns, and undone when f throws (the throw
    goes on). Returns what f returns. Inside a transaction, it joins that one.
-   Options: :read-only? true, Postgres refuses every write in it."
-  ([pool-or-transaction f] (run-in-transaction! pool-or-transaction {} f))
-  ([pool-or-transaction {:keys [read-only?]} f]
-   (if (:cellar/connection pool-or-transaction)
-     (f pool-or-transaction)
-     (with-open [connection (jdbc/get-connection (:cellar/datasource pool-or-transaction))]
-       (jdbc/with-transaction [connection connection {:read-only (boolean read-only?)}]
-         (f {:cellar/connection connection}))))))
+   Options, every key required: :read-only?, true and Postgres refuses every
+   write in it."
+  [pool-or-transaction options f]
+  (settings/check-transaction-options options)
+  (if (:cellar/connection pool-or-transaction)
+    (f pool-or-transaction)
+    (with-open [connection (jdbc/get-connection (:cellar/datasource pool-or-transaction))]
+      (jdbc/with-transaction [connection connection {:read-only (:read-only? options)}]
+        (f {:cellar/connection connection})))))

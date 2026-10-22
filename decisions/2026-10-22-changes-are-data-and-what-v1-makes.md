@@ -1,5 +1,7 @@
 # Changes are data, and v1 makes tables, columns, references, enums and indexes
 
+> **Changed in part** by [Every value that sets behaviour is a setting](2026-10-22-every-value-that-sets-behaviour-is-a-setting.md) (2026-10-22, v0.1.2): each part of a plan runs under its own time limits, which `run-instant-part!`, `run-slow-part!` and `migrate!` take, not the pool's; a table map writes out `:indexes`, `:gates` and `:on-change`, and a column its five options.
+
 > Builds on Groundwork's decision "A table is one map".
 
 **Decision:**

@@ -4,13 +4,12 @@
   (:require
    [clojure.string :as str]
    [clojure.test :refer [deftest is testing]]
-   [cellar.api :as database]))
+   [cellar.api :as database]
+   [cellar.test-settings :as test-settings :refer [column]]))
 
-(def ^:private port (some-> (System/getenv "CELLAR_TEST_PORT") parse-long))
+(def ^:private port test-settings/port)
 
-(defn- start-pool! []
-  (database/start-pool! {:host "localhost" :port port :database "postgres" :user (System/getenv "CELLAR_TEST_USER")
-                         :password nil :tls :off :pool-size 3 :statement-timeout-ms 5000 :time-zone "UTC"}))
+(defn- start-pool! [] (test-settings/start-pool! 3 5000))
 
 (defn- run-sql! [pool text] (database/run-statement! pool (database/make-query-from-sql-text "test" text) {}))
 
@@ -49,7 +48,7 @@
         (testing "a query Postgres can't prepare without values is unknown, and the transaction it was in goes on"
           (is (= [1 :unknown]
                  (database/run-and-list-tables-read
-                  #(database/run-in-transaction! pool
+                  #(database/run-in-transaction! pool {:read-only? false}
                      (fn [transaction]
                        (database/find-one-row transaction find-untyped {:x "a"})
                        (run-sql! transaction "INSERT INTO things VALUES (1, 'a')"))))))
@@ -63,8 +62,12 @@
     (println "cellar.tables-read-test: skipped, CELLAR_TEST_PORT is not set")
     (let [pool     (start-pool!)
           heard    (promise)
-          listener (database/start-listening! pool "cellar_test" {:on-notifications #(deliver heard %)
-                                                                      :on-reconnect     (fn [])})]
+          listener (database/start-listening! pool "cellar_test" {:on-notifications       #(deliver heard %)
+                                                                      :on-reconnect           (fn [])
+                                                                      :batch-window-ms        50
+                                                                      :check-stopped-every-ms 500
+                                                                      :reconnect-after-ms     1000
+                                                                      :stop-wait-ms           2000})]
       (try
         (Thread/sleep 300)
         (run-sql! pool "SELECT pg_notify('cellar_test', 'one'), pg_notify('cellar_test', 'two')")
@@ -72,12 +75,14 @@
                (deref heard 3000 :nothing))
             "two notifications close together: one batch")
         (finally
-          (database/stop-listening! listener)
+          (is (database/stop-listening! listener) "the listener had ended")
           (database/stop-pool! pool))))))
 
 (def ^:private told-things
   {:table     :told-things
-   :columns   [[:told-thing/id :int {:primary-key? true}]]
+   :columns   [(column :told-thing/id :int :primary-key? true)]
+   :indexes   []
+   :gates     nil
    :on-change {:function "public.tell_test" :arguments ["told_thing__id"]}})
 
 (deftest change-triggers
@@ -90,7 +95,7 @@
         (let [plan (database/make-plan-from-tables pool [told-things] [])]
           (is (= 3 (count (filter #(str/starts-with? (:sql %) "CREATE TRIGGER") (:instant plan))))
               "one trigger per insert, update and delete"))
-        (with-out-str @(:slow-part (database/migrate! pool [told-things] [])))
+        (with-out-str @(:slow-part (database/migrate! pool [told-things] [] test-settings/migrate-options)))
         (is (database/does-database-match-tables? pool [told-things] []))
         (testing "a changed :on-change is new triggers in place of the old"
           (let [changed (assoc-in told-things [:on-change :arguments] ["told_thing__id" "x"])
@@ -99,5 +104,5 @@
             (is (= 3 (count (filter #(str/starts-with? (:sql %) "CREATE TRIGGER") (:instant plan)))))))
         (testing "no :on-change: the triggers go"
           (is (= 3 (count (filter #(str/starts-with? (:sql %) "DROP TRIGGER")
-                                  (:instant (database/make-plan-from-tables pool [(dissoc told-things :on-change)] [])))))))
+                                  (:instant (database/make-plan-from-tables pool [(assoc told-things :on-change nil)] [])))))))
         (finally (database/stop-pool! pool))))))

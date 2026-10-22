@@ -7,7 +7,9 @@
   org.postgresql/postgresql         {:mvn/version "42.7.14"}
   com.zaxxer/HikariCP               {:mvn/version "7.1.0"}
   ;; jsonb columns and Postgres's query plans
-  metosin/jsonista                  {:mvn/version "1.0.2"}}
+  metosin/jsonista                  {:mvn/version "1.0.2"}
+  ;; the settings, options and table maps, checked before anything runs
+  metosin/malli                     {:mvn/version "0.20.3"}}
 
  :aliases
  {;; the tests:  clojure -X:test  (the Postgres ones need CELLAR_TEST_PORT, see README.md)

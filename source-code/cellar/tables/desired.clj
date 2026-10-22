@@ -2,12 +2,15 @@
   "The table maps turned into the form catalog.clj reads from Postgres, so
    the two can be compared, and a table map turned into its row shape.
 
-     {:table   :orders
-      :columns [[:order/id      :uuid    {:primary-key? true :default :random-uuid}]
-                [:order/shop-id :uuid    {:references :shop/id}]
-                [:order/status  [:enum \"draft\" \"done\"]]
-                [:order/note    :string  {:optional? true}]]
-      :indexes [[:order/shop-id]]}"
+     {:table     :orders
+      :columns   [[:order/id      :uuid   {:primary-key? true  :optional? false :unique? false :default :random-uuid :references nil}]
+                  [:order/shop-id :uuid   {:primary-key? false :optional? false :unique? false :default nil :references :shop/id}]
+                  [:order/note    :string {:primary-key? false :optional? true  :unique? false :default nil :references nil}]]
+      :indexes   [[:order/shop-id]]
+      :gates     nil
+      :on-change nil}
+
+   The maps are checked by cellar.settings/tables-shape before they come here."
   (:require
    [cellar.tables.gates :as gates]
    [cellar.tables.names :as names]

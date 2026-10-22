@@ -4,11 +4,12 @@
    says it was skipped otherwise."
   (:require
    [clojure.test :refer [deftest is testing]]
-   [cellar.api :as sql])
+   [cellar.api :as sql]
+   [cellar.test-settings :as test-settings])
   (:import
    (java.time Instant OffsetDateTime)))
 
-(def ^:private port (some-> (System/getenv "CELLAR_TEST_PORT") parse-long))
+(def ^:private port test-settings/port)
 
 (def ^:private find-orders-of-shop (sql/make-query-from-sql-file "cellar/find_orders_of_shop.sql"))
 (def ^:private insert-order (sql/make-query-from-sql-file "cellar/insert_order.sql"))
@@ -19,9 +20,7 @@
 (deftest queries-against-postgres
   (if-not port
     (println "cellar.queries-test: skipped, CELLAR_TEST_PORT is not set")
-    (let [pool (sql/start-pool! {:host "localhost" :port port :database "postgres"
-                                 :user (System/getenv "CELLAR_TEST_USER") :password nil
-                                 :tls :off :pool-size 2 :statement-timeout-ms 5000 :time-zone "UTC"})]
+    (let [pool (test-settings/start-pool! 2 5000)]
       (try
         (sql/run-statement! pool drop-test-orders {})
         (sql/run-statement! pool create-test-orders {})
@@ -37,7 +36,7 @@
           (is (= 42 (:order/id (sql/find-one-row pool find-orders-of-shop {:order/shop-id 7})))))
         (testing "a transaction that throws keeps nothing"
           (is (thrown? clojure.lang.ExceptionInfo
-                       (sql/run-in-transaction! pool
+                       (sql/run-in-transaction! pool {:read-only? false}
                          (fn [transaction]
                            (sql/run-statement! transaction insert-order {:order/id 43 :order/shop-id 7 :order/total 9.50M :order/at nil})
                            (throw (ex-info "no" {}))))))

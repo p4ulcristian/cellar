@@ -1,5 +1,7 @@
 # cellar is its own library
 
+> **Changed in part** by [Every value that sets behaviour is a setting](2026-10-22-every-value-that-sets-behaviour-is-a-setting.md) (2026-10-22, v0.1.2): its `deps.edn` names malli too, which checks the settings, the options and the table maps.
+
 > Changes in part [A query knows the tables it reads; a table can call a function on change; NOTIFY can be heard](2026-10-22-a-query-knows-its-tables-and-postgres-can-be-heard.md): its names.
 
 **Decision:** cellar is a library of its own, in its own public repository, under the MIT license; an app or a framework takes it from git by tag. It was Groundwork's library `groundwork.server.database`; now it is the namespace `cellar`, with one public namespace, `cellar.api`, and its parts in `cellar.queries.*` and `cellar.tables.*`. Its `.sql` files are on the classpath under `cellar/`. Its own `deps.edn` names only next.jdbc, PgJDBC, HikariCP and jsonista, and its tests run with nothing else on the classpath. It knows nothing of who uses it:

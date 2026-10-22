@@ -1,10 +1,12 @@
 (ns cellar.queries.listen
   "Hearing Postgres's NOTIFY: one connection of the pool held open with
    LISTEN, read on a virtual thread. Notifications that arrive close
-   together (within 50 ms) are handed on as one batch. When the connection
-   breaks, the thread opens another, LISTENs again and calls on-reconnect:
-   whatever was sent in between was missed."
+   together (within :batch-window-ms) are handed on as one batch. When the
+   connection breaks, the thread waits :reconnect-after-ms, opens another,
+   LISTENs again and calls on-reconnect: whatever was sent in between was
+   missed."
   (:require
+   [cellar.settings :as settings]
    [next.jdbc :as jdbc])
   (:import
    (java.lang System$Logger System$Logger$Level)
@@ -13,10 +15,11 @@
 
 (def ^:private ^System$Logger logger (System/getLogger "cellar"))
 
-(defn- read-batch [^PGConnection connection]
-  (when-let [first-ones (seq (.getNotifications connection 500))]
-    (Thread/sleep 50)
-    (for [^PGNotification notification (concat first-ones (.getNotifications connection 1))]
+(defn- read-batch [^PGConnection connection {:keys [batch-window-ms check-stopped-every-ms]}]
+  (when-let [first-ones (seq (.getNotifications connection (int check-stopped-every-ms)))]
+    (when (pos? batch-window-ms) (Thread/sleep (long batch-window-ms)))
+    ;; without a wait: what has arrived by now
+    (for [^PGNotification notification (concat first-ones (.getNotifications connection))]
       {:channel (.getName notification) :payload (.getParameter notification)})))
 
 (defn- hand-on! [f & arguments]
@@ -24,8 +27,9 @@
        (catch Exception e
          (.log logger System$Logger$Level/ERROR "A listener's function failed" ^Throwable e))))
 
-(defn- listen-on-one-connection! [pool channel running? again? {:keys [on-notifications on-reconnect]}]
+(defn- listen-on-one-connection! [pool channel running? again? {:keys [on-notifications on-reconnect] :as options}]
   (with-open [^Connection connection (jdbc/get-connection (:cellar/datasource pool))]
+    ;; NOTIFY is delivered outside a transaction only
     (.setAutoCommit connection true)
     (with-open [statement (.createStatement connection)]
       (.execute statement (str "LISTEN " channel)))
@@ -33,31 +37,37 @@
     (when again? (hand-on! on-reconnect))
     (let [pg (.unwrap connection PGConnection)]
       (while @running?
-        (when-let [batch (seq (read-batch pg))]
+        (when-let [batch (seq (read-batch pg options))]
           (hand-on! on-notifications (vec batch)))))))
 
 (defn start-listening!
-  "LISTENs on a channel (a plain Postgres name). (on-notifications
-   [{:channel :payload} …]) for each batch, (on-reconnect) after a break.
-   Holds one connection of the pool for as long as it runs."
-  [pool channel handlers]
+  "LISTENs on a channel (a plain Postgres name), as the options say
+   (cellar.settings/listening-options-shape, every key required, checked
+   first). Holds one connection of the pool for as long as it runs."
+  [pool channel options]
+  (settings/check-listening-options options)
   (when-not (re-matches #"[a-z_][a-z0-9_]*" channel)
     (throw (ex-info (str "Not a channel name: " channel) {:type :cellar/bad-channel :channel channel})))
-  (let [running? (atom true)
+  (let [{:keys [reconnect-after-ms stop-wait-ms]} options
+        running? (atom true)
         thread   (Thread/startVirtualThread
                   (fn []
                     (loop [again? false]
                       (when @running?
-                        (try (listen-on-one-connection! pool channel running? again? handlers)
+                        (try (listen-on-one-connection! pool channel running? again? options)
                              (catch Exception e
                                (when @running?
-                                 (.log logger System$Logger$Level/WARNING (str "Listening on " channel " broke; again in 1 s") ^Throwable e)
-                                 (Thread/sleep 1000))))
+                                 (.log logger System$Logger$Level/WARNING
+                                       (str "Listening on " channel " broke; again in " reconnect-after-ms " ms") ^Throwable e)
+                                 (Thread/sleep (long reconnect-after-ms)))))
                         (recur true)))))]
-    {:running? running? :thread thread}))
+    {:running? running? :thread thread :stop-wait-ms stop-wait-ms}))
 
 (defn stop-listening!
-  "Stops listening; the held connection goes back to the pool within a second."
-  [{:keys [running? ^Thread thread]}]
+  "Stops listening: the thread ends within :check-stopped-every-ms (and the
+   batch it is handing on), and its connection goes back to the pool.
+   Waits at most :stop-wait-ms; returns whether the thread had ended."
+  [{:keys [running? ^Thread thread stop-wait-ms]}]
   (reset! running? false)
-  (.join thread 2000))
+  (when (pos? stop-wait-ms) (.join thread (long stop-wait-ms)))
+  (not (.isAlive thread)))

@@ -4,8 +4,9 @@
 
      {:table :orders … :gates {:read \"…\" :insert \"…\" :update \"…\" :delete \"false\"}}
 
-   Each operation with a condition other than \"false\" becomes one policy;
-   an operation with none has no policy, which Postgres treats as no. A
+   All four operations are written out (cellar.settings/table-shape). Each
+   with a condition other than \"false\" becomes one policy; \"false\" is
+   no policy, which Postgres treats as no. A
    policy's name ends in a hash of its SQL, so a changed condition is a new
    name: the old policy is dropped and the new one made, no text compared."
   (:require
