@@ -38,21 +38,25 @@
                             "CREATE VIEW named_things AS SELECT * FROM things WHERE thing__name IS NOT NULL;"
                             "CREATE FUNCTION count_things() RETURNS bigint LANGUAGE sql AS 'SELECT count(*) FROM things'"))
         (testing "a query: its tables, planned without running it"
-          (is (= [[] #{:things}] (database/run-and-list-tables-read #(database/find-rows pool find-things-named {:thing/name "a"}))))
-          (is (= [nil #{:things}] (database/run-and-list-tables-read #(database/find-one-row pool find-things-named {:thing/name "a"})))))
+          (is (= [[] #{:things}] (database/run-and-list-tables-read {:log test-settings/log} #(database/find-rows pool find-things-named {:thing/name "a"}))))
+          (is (= [nil #{:things}] (database/run-and-list-tables-read {:log test-settings/log} #(database/find-one-row pool find-things-named {:thing/name "a"})))))
         (testing "a view counts as the tables under it"
-          (is (= #{:things} (second (database/run-and-list-tables-read #(database/find-rows pool find-named-things {}))))))
+          (is (= #{:things} (second (database/run-and-list-tables-read {:log test-settings/log} #(database/find-rows pool find-named-things {}))))))
         (testing "a function hides its tables; the query names them in a comment"
-          (is (= #{} (second (database/run-and-list-tables-read #(database/find-rows pool count-things {})))))
-          (is (= #{:things} (second (database/run-and-list-tables-read #(database/find-rows pool count-things-saying-so {}))))))
+          (is (= #{} (second (database/run-and-list-tables-read {:log test-settings/log} #(database/find-rows pool count-things {})))))
+          (is (= #{:things} (second (database/run-and-list-tables-read {:log test-settings/log} #(database/find-rows pool count-things-saying-so {}))))))
         (testing "a query Postgres can't prepare without values is unknown, and the transaction it was in goes on"
           (is (= [1 :unknown]
                  (database/run-and-list-tables-read
+                  {:log test-settings/log}
                   #(database/run-in-transaction! pool {:read-only? false}
                      (fn [transaction]
                        (database/find-one-row transaction find-untyped {:x "a"})
                        (run-sql! transaction "INSERT INTO things VALUES (1, 'a')"))))))
-          (is (= [{:thing/id 1}] (database/find-rows pool find-things-named {:thing/name "a"}))))
+          (is (= [{:thing/id 1}] (database/find-rows pool find-things-named {:thing/name "a"})))
+          (is (= [:warn :cellar/tables-read-unknown {:cellar/query "a param Postgres can't type"}]
+                 (last @test-settings/lines-logged))
+              "and the log is told, with the query"))
         (testing "outside run-and-list-tables-read nothing is noted"
           (is (= [{:thing/id 1}] (database/find-rows pool find-things-named {:thing/name "a"}))))
         (finally (database/stop-pool! pool))))))
@@ -62,7 +66,10 @@
     (println "cellar.tables-read-test: skipped, CELLAR_TEST_PORT is not set")
     (let [pool     (start-pool!)
           heard    (promise)
-          listener (database/start-listening! pool "cellar_test" {:on-notifications       #(deliver heard %)
+          lines    (atom [])
+          listener (database/start-listening! pool "cellar_test" {:log                    (test-settings/make-log lines)
+                                                                      :on-notifications       #(do (deliver heard %)
+                                                                                                   (throw (RuntimeException. "the app's own failure")))
                                                                       :on-reconnect           (fn [])
                                                                       :batch-window-ms        50
                                                                       :check-stopped-every-ms 500
@@ -74,6 +81,18 @@
         (is (= [{:channel "cellar_test" :payload "one"} {:channel "cellar_test" :payload "two"}]
                (deref heard 3000 :nothing))
             "two notifications close together: one batch")
+        (Thread/sleep 100)
+        (let [[[level event data]] @lines]
+          (is (= [:error :cellar/listener-function-failed "cellar_test" "the app's own failure"]
+                 [level event (:cellar/channel data) (ex-message (:error data))])
+              "a failing function is written to the log, and listening goes on"))
+        (testing "a break: written to the log, and listening again"
+          (run-sql! pool "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query = 'LISTEN cellar_test'")
+          (Thread/sleep 1500)
+          (is (some (fn [[level event data]] (and (= [:warn :cellar/listening-broke] [level event])
+                                                  (= 1000 (:cellar/reconnect-after-ms data))
+                                                  (instance? Throwable (:error data))))
+                    @lines)))
         (finally
           (is (database/stop-listening! listener) "the listener had ended")
           (database/stop-pool! pool))))))
@@ -95,7 +114,12 @@
         (let [plan (database/make-plan-from-tables pool [told-things] [])]
           (is (= 3 (count (filter #(str/starts-with? (:sql %) "CREATE TRIGGER") (:instant plan))))
               "one trigger per insert, update and delete"))
-        (with-out-str @(:slow-part (database/migrate! pool [told-things] [] test-settings/migrate-options)))
+        (let [lines (atom [])]
+          @(:slow-part (database/migrate! pool [told-things] [] (assoc test-settings/migrate-options :log (test-settings/make-log lines))))
+          (is (= [[:info :cellar/planned :instant]]
+                 (distinct (map (fn [[level event data]] [level event (:cellar/part data)]) @lines))))
+          (is (some #(str/starts-with? (:cellar/sql (nth % 2)) "CREATE TRIGGER") @lines)
+              "each planned statement is written to the log, with its part and why"))
         (is (database/does-database-match-tables? pool [told-things] []))
         (testing "a changed :on-change is new triggers in place of the old"
           (let [changed (assoc-in told-things [:on-change :arguments] ["told_thing__id" "x"])

@@ -26,12 +26,12 @@ Needs only next.jdbc, PgJDBC, HikariCP, jsonista and malli. One public namespace
 | `run-in-transaction!` | `(f transaction)` in one transaction, kept or undone; `{:read-only? true}` refuses writes, `false` written out otherwise |
 | `make-plan-from-tables` | what would bring Postgres to the maps and changes, running nothing: `{:instant :slow :stops :changes-to-mark}` |
 | `run-instant-part!` `run-slow-part!` | run a plan's two parts (the deploy), each under its own statement and lock time limits |
-| `migrate!` | plan, run the instant part now and the slow part on a thread (development) |
+| `migrate!` | plan, run the instant part now and the slow part on a thread, each planned statement written to the log |
 | `does-database-match-tables?` | whether the app can start: no instant part, stop or change left |
 | `grant-tables-to-role!` | let the app's own role, which owns nothing, use the tables through their gates |
 | `turn-table-into-row-shape` | a table's rows as a malli shape |
 | `turn-key-into-column-name` `turn-table-key-into-table-name` `turn-table-name-into-table-key` | names: `:order/shop-id` ↔ `order__shop_id`, `:billing/invoices` ↔ `billing.invoices` |
-| `run-and-list-tables-read` | runs a function and returns what it returned with the tables its queries read, as Postgres's planner says |
+| `run-and-list-tables-read` | runs a function and returns what it returned with the tables its queries read, as Postgres's planner says; `{:log log}` first |
 | `start-listening!` `stop-listening!` | `LISTEN` on a channel, notifications in batches, a reconnect said; its batch window, waits and reconnect delay written out |
 
 ```clojure
@@ -81,7 +81,8 @@ Needs only next.jdbc, PgJDBC, HikariCP, jsonista and malli. One public namespace
 (cellar/migrate! pool [shops orders partner-payouts]
                  [{:id "2026-10-23-rename-order-note" :rename-column [:orders :order/note :order/customer-note]}]
                  {:instant-part {:statement-timeout-ms 30000 :lock-timeout-ms 5000}   ; an ALTER waits 5 s for its lock, then fails
-                  :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}}) ; an index build takes what it takes
+                  :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}   ; an index build takes what it takes
+                  :log          log})                                                 ; the app's: each planned statement
 
 ;; app/orders/find_orders_of_shop.sql:
 ;;   SELECT order__id, order__total FROM orders WHERE order__shop_id = :order/shop-id
@@ -100,6 +101,14 @@ A column is the exception: it says only the options it has, since an unsaid
 one is the safe answer
 ([why](decisions/2026-10-22-a-column-says-only-the-options-it-has.md));
 an unknown option is still refused.
+
+cellar writes no line itself: `migrate!`, `start-listening!` and
+`run-and-list-tables-read` take the app's log function,
+`(log level event data)` as [logbook](https://github.com/p4ulcristian/logbook)
+makes it, under `:log` (`:cellar/planned`, `:cellar/listening-broke`,
+`:cellar/listener-function-failed`, `:cellar/tables-read-unknown`;
+[why](decisions/2026-10-22-the-app-passes-its-log.md)). HikariCP's own lines
+still go through SLF4J.
 
 A table map's `:gates`, nil or SQL conditions for all four operations
 (`{:read "…" :insert "…" :update "…" :delete "false"}`), become row-level

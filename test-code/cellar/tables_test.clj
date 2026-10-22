@@ -47,13 +47,8 @@
       (f pool)
       (finally (sql/stop-pool! pool)))))
 
-(defn- with-out-str-quiet [f]
-  (let [result (atom nil)]
-    (with-out-str (reset! result (f)))
-    @result))
-
 (defn- migrate-and-wait! [pool tables changes]
-  (let [plan (with-out-str-quiet #(schema/migrate! pool tables changes test-settings/migrate-options))]
+  (let [plan (schema/migrate! pool tables changes test-settings/migrate-options)]
     @(:slow-part plan)
     plan))
 

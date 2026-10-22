@@ -32,6 +32,19 @@
 (defn start-pool! [pool-size statement-timeout-ms]
   (cellar/start-pool! (make-pool-settings pool-size statement-timeout-ms)))
 
+(defn make-log
+  "A log function as an app's logbook makes one, keeping each call's
+   [level event data] in the atom lines."
+  [lines]
+  (fn [level event data] (swap! lines conj [level event data]) nil))
+
+(def lines-logged
+  "What the tests' log has been handed, [level event data] each."
+  (atom []))
+
+(def log (make-log lines-logged))
+
 (def migrate-options
   {:instant-part {:statement-timeout-ms 10000 :lock-timeout-ms 5000}
-   :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}})
+   :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}
+   :log          log})

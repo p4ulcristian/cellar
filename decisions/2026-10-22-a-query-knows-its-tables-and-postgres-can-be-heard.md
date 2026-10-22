@@ -1,5 +1,7 @@
 # A query knows the tables it reads; a table can call a function on change; NOTIFY can be heard
 
+> **Changed in part** by [The app passes its log](2026-10-22-the-app-passes-its-log.md) (2026-10-22, v0.2.0): `run-and-list-tables-read` takes `{:log log}` first, and a listener's break and failures are written to the app's log.
+
 > **Changed in part** by [Every value that sets behaviour is a setting](2026-10-22-every-value-that-sets-behaviour-is-a-setting.md) (2026-10-22, v0.1.2): the listener's batch window, its wait, its reconnect delay and its stop wait are `start-listening!`'s required options, not 50 ms, 500 ms, 1 s and 2 s.
 
 > **Changed in part** by [cellar is its own library](2026-10-22-cellar-is-its-own-library.md) (2026-10-22): the changed rows are `cellar_new_rows` / `cellar_old_rows`, and the changes done are remembered in `cellar.changes_done`.

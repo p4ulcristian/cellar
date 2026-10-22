@@ -29,7 +29,12 @@
 
      (database/migrate! pool [shops orders] changes
                         {:instant-part {:statement-timeout-ms 30000 :lock-timeout-ms 5000}
-                         :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}})
+                         :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}
+                         :log          log})   ; the app's log function (logbook's)
+
+   cellar writes no line itself: the functions that have something to say
+   (migrate!, start-listening!, run-and-list-tables-read) take the app's
+   log, (log level event data), under :log in their options.
 
    A table map writes out every key cellar reads (:indexes [] for none,
    :gates and :on-change nil for none); it is open, so another library's
@@ -163,9 +168,13 @@
   "Runs (f) and returns [what f returned, the tables its queries read]: a
    set of table keys (#{:orders :shops}), or :unknown when Postgres's
    planner couldn't say for one of them (a function that reads tables
-   inside it). Each query is planned once, without running it."
-  [f]
-  (tables-read/run-and-list-tables-read f))
+   inside it), which is written to the log (:cellar/tables-read-unknown,
+   once per query). Each query is planned once, without running it.
+   Options, every key required: {:log log}, the app's log, the running
+   request's when there is one."
+  [options f]
+  (settings/check-tables-read-options options)
+  (tables-read/run-and-list-tables-read (:log options) f))
 
 (defn turn-table-name-into-table-key
   "A table's key from its folder and name: \"public\" \"orders\" -> :orders,
@@ -177,7 +186,8 @@
   "LISTENs on a Postgres channel, on one connection of the pool held for as
    long as it runs. Options, every key required:
 
-     {:on-notifications       f      ; (f [{:channel :payload} …]) for each batch
+     {:log                    log    ; the app's: a break, or a failure of either function, is written to it
+      :on-notifications       f      ; (f [{:channel :payload} …]) for each batch
       :on-reconnect           f      ; (f) after a break, listening again: what came in between was missed
       :batch-window-ms        50     ; after the first notification, how long more join its batch
       :check-stopped-every-ms 500    ; one wait for a notification, before looking whether it was stopped
@@ -288,18 +298,22 @@
         (finally
           (sql/run-statement! on-connection reset-part-limits {}))))))
 
-(defn- print-plan [{:keys [instant slow]}]
-  (doseq [[part statements] [["now" instant] ["in the background" slow]]
+(defn- log-plan [log {:keys [instant slow]}]
+  (doseq [[part statements] [[:instant instant] [:slow slow]]
           {:keys [sql why]} statements]
-    (println (str "cellar (" part ", " why "):\n  " (str/replace sql "\n" "\n  ")))))
+    (log :info :cellar/planned {:cellar/part part :cellar/why why :cellar/sql sql})))
 
 (defn migrate!
-  "Brings Postgres to the tables, for development: plans, throws on a stop
-   (nothing runs), prints the plan, runs the instant part now and the slow
-   part on a background thread, each with its options (every key required):
+  "Brings Postgres to the tables, for development and the deploy: plans,
+   throws on a stop (nothing runs), runs the instant part now and the slow
+   part on a background thread, each with its options, and writes each
+   planned statement to the log, :info :cellar/planned {:cellar/part
+   :instant-or-:slow :cellar/why … :cellar/sql …}. Options, every key
+   required:
 
      {:instant-part {:statement-timeout-ms 30000 :lock-timeout-ms 5000}
-      :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}}
+      :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}
+      :log          log}                                                ; the app's
 
    Returns the plan with :slow-part, a future of the slow part (deref it to
    wait)."
@@ -307,7 +321,7 @@
   (settings/check-migrate-options options)
   (let [plan (make-plan-from-tables pool tables changes)]
     (run-instant-part! pool plan (:instant-part options))
-    (print-plan plan)
+    (log-plan (:log options) plan)
     (assoc plan :slow-part (future (run-slow-part! pool plan (:slow-part options))))))
 
 (defn does-database-match-tables?

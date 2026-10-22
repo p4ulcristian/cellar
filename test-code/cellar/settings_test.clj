@@ -49,15 +49,21 @@
   (testing "start-listening! says each of its numbers and both functions"
     (let [{:keys [type errors]} (find-refusal #(cellar/start-listening! nil "things" {:on-notifications (fn [_])}))]
       (is (= :cellar/bad-options type))
-      (is (= #{:on-reconnect :batch-window-ms :check-stopped-every-ms :reconnect-after-ms :stop-wait-ms}
+      (is (= #{:log :on-reconnect :batch-window-ms :check-stopped-every-ms :reconnect-after-ms :stop-wait-ms}
              (set (keys errors))))))
+  (testing "a function that writes a line takes the app's log, a function"
+    (is (= {:type :cellar/bad-options :errors {:log ["missing required key"]}}
+           (find-refusal #(cellar/run-and-list-tables-read {} (fn [])))))
+    (is (= {:type :cellar/bad-options
+            :errors {:log ["should be the app's log function, (log level event data), made by logbook"]}}
+           (find-refusal #(cellar/run-and-list-tables-read {:log :stdout} (fn []))))))
   (testing "each part of a plan says its time limits"
     (is (= {:type :cellar/bad-options :errors {:lock-timeout-ms ["missing required key"]}}
            (find-refusal #(cellar/run-instant-part! nil {:instant [] :slow [] :stops [] :changes-to-mark []}
                                                     {:statement-timeout-ms 1000}))))
     (is (= :cellar/bad-options
            (:type (find-refusal #(cellar/run-slow-part! nil {:slow []} {})))))
-    (is (= {:type :cellar/bad-options :errors {:slow-part ["missing required key"]}}
+    (is (= {:type :cellar/bad-options :errors {:slow-part ["missing required key"] :log ["missing required key"]}}
            (find-refusal #(cellar/migrate! nil [a-table] [] {:instant-part {:statement-timeout-ms 1000 :lock-timeout-ms 1000}}))))))
 
 (deftest a-table-map-writes-out-every-key-cellar-reads

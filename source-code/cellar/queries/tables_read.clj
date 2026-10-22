@@ -21,13 +21,11 @@
    [cellar.queries.names :as names]
    [jsonista.core :as json])
   (:import
-   (java.lang System$Logger System$Logger$Level)
    (java.sql Connection Savepoint Statement)))
 
-(def ^:private ^System$Logger logger (System/getLogger "cellar"))
-
 (def ^:dynamic ^:private *noted*
-  "An atom of the tables read so far, while run-and-list-tables-read runs; nil otherwise."
+  "While run-and-list-tables-read runs, {:tables an-atom-of-the-tables-read
+   :log the-log-it-was-given}; nil otherwise."
   nil)
 
 (defn- collect-tables [node]
@@ -79,28 +77,28 @@
   (when-let [[_ names] (re-find #"(?m)^\s*--\s*reads:\s*(.+)$" (:text-with-dollar-numbers query))]
     (set (map keyword (str/split (str/trim names) #"[\s,]+")))))
 
-(defn- find-tables-of-query [connection query]
+(defn- find-tables-of-query [log connection query]
   (let [known (:cellar/tables-read query)]
     (or @known
         (let [planned (ask-planner-safely connection query)
               tables  (if (= :unknown planned) planned (into planned (find-tables-named-in-comment query)))]
           (when (= :unknown tables)
-            (.log logger System$Logger$Level/WARNING
-                  (str "The planner can't say which tables " (:cellar/path query)
-                       " reads; any change counts for its answers")))
+            ;; once per query: its answer is kept
+            (log :warn :cellar/tables-read-unknown {:cellar/query (:cellar/path query)}))
           (reset! known tables)))))
 
 (defn note-tables-of-query!
   "Notes the tables a query reads, when a run-and-list-tables-read is running."
   [connection query]
-  (when *noted*
-    (let [tables (find-tables-of-query connection query)]
-      (swap! *noted* #(if (or (= :unknown %) (= :unknown tables)) :unknown (into % tables))))))
+  (when-let [{:keys [tables log]} *noted*]
+    (let [read (find-tables-of-query log connection query)]
+      (swap! tables #(if (or (= :unknown %) (= :unknown read)) :unknown (into % read))))))
 
 (defn run-and-list-tables-read
   "Runs (f) and returns [what f returned, the tables every query it ran
-   reads]: a set of table keys, or :unknown."
-  [f]
-  (binding [*noted* (atom #{})]
+   reads]: a set of table keys, or :unknown. A query the planner can't say
+   is written to log, once."
+  [log f]
+  (binding [*noted* {:tables (atom #{}) :log log}]
     (let [result (f)]
-      [result @*noted*])))
+      [result @(:tables *noted*)])))

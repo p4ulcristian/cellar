@@ -102,6 +102,12 @@
 ;; -----------------------------------------------------------------------------
 ;; The functions' options
 
+(def log-entry
+  "The app's log function, (log level event data), made by logbook: the
+   functions that write a line take it under :log in their options; cellar
+   never decides how a line is written."
+  [:log [fn? {:error/message "should be the app's log function, (log level event data), made by logbook"}]])
+
 (def transaction-options-shape
   "run-in-transaction!'s options. :read-only?: true, Postgres refuses every
    write in it."
@@ -121,10 +127,13 @@
    [:lock-timeout-ms none-or-ms]])
 
 (def migrate-options-shape
-  "migrate!'s options: each part's, as run-instant-part! and run-slow-part! take them."
+  "migrate!'s options: each part's, as run-instant-part! and run-slow-part!
+   take them, and :log, the app's log, which each planned statement is
+   written to (:cellar/planned)."
   [:map {:closed true}
    [:instant-part part-options-shape]
-   [:slow-part part-options-shape]])
+   [:slow-part part-options-shape]
+   log-entry])
 
 (def listening-options-shape
   "start-listening!'s options, every key required.
@@ -136,14 +145,25 @@
    :check-stopped-every-ms: how long one wait for a notification lasts
    before the thread looks whether it was stopped.
    :reconnect-after-ms: after a break, how long to wait before connecting again.
-   :stop-wait-ms: how long stop-listening! waits for the thread to end."
+   :stop-wait-ms: how long stop-listening! waits for the thread to end.
+   :log: the app's log; a break in listening (:cellar/listening-broke) and
+   a failure of :on-notifications or :on-reconnect
+   (:cellar/listener-function-failed) are written to it."
   [:map {:closed true}
+   log-entry
    [:on-notifications fn?]
    [:on-reconnect fn?]
    [:batch-window-ms [:int {:min 0}]]
    [:check-stopped-every-ms [:int {:min 1}]]
    [:reconnect-after-ms [:int {:min 0}]]
    [:stop-wait-ms [:int {:min 0}]]])
+
+(def tables-read-options-shape
+  "run-and-list-tables-read's options. :log: the app's log, the running
+   request's when there is one; a query whose tables Postgres's planner
+   can't say is written to it (:cellar/tables-read-unknown)."
+  [:map {:closed true}
+   log-entry])
 
 ;; -----------------------------------------------------------------------------
 ;; Table maps
@@ -220,6 +240,9 @@
 
 (defn check-listening-options [options]
   (check-data-for-shape "The options" :cellar/bad-options listening-options-shape options))
+
+(defn check-tables-read-options [options]
+  (check-data-for-shape "The options" :cellar/bad-options tables-read-options-shape options))
 
 (defn check-tables [tables]
   (check-data-for-shape "The tables" :cellar/bad-tables tables-shape tables))

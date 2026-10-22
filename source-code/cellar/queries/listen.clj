@@ -4,16 +4,14 @@
    together (within :batch-window-ms) are handed on as one batch. When the
    connection breaks, the thread waits :reconnect-after-ms, opens another,
    LISTENs again and calls on-reconnect: whatever was sent in between was
-   missed."
+   missed. A break, and a failure of either function the app hands in, is
+   written to the options' :log."
   (:require
    [cellar.settings :as settings]
    [next.jdbc :as jdbc])
   (:import
-   (java.lang System$Logger System$Logger$Level)
    (java.sql Connection)
    (org.postgresql PGConnection PGNotification)))
-
-(def ^:private ^System$Logger logger (System/getLogger "cellar"))
 
 (defn- read-batch [^PGConnection connection {:keys [batch-window-ms check-stopped-every-ms]}]
   (when-let [first-ones (seq (.getNotifications connection (int check-stopped-every-ms)))]
@@ -22,10 +20,10 @@
     (for [^PGNotification notification (concat first-ones (.getNotifications connection))]
       {:channel (.getName notification) :payload (.getParameter notification)})))
 
-(defn- hand-on! [f & arguments]
+(defn- hand-on! [{:keys [log]} channel f & arguments]
   (try (apply f arguments)
        (catch Exception e
-         (.log logger System$Logger$Level/ERROR "A listener's function failed" ^Throwable e))))
+         (log :error :cellar/listener-function-failed {:cellar/channel channel :error e}))))
 
 (defn- listen-on-one-connection! [pool channel running? again? {:keys [on-notifications on-reconnect] :as options}]
   (with-open [^Connection connection (jdbc/get-connection (:cellar/datasource pool))]
@@ -34,11 +32,11 @@
     (with-open [statement (.createStatement connection)]
       (.execute statement (str "LISTEN " channel)))
     ;; told only once listening again, so nothing falls between
-    (when again? (hand-on! on-reconnect))
+    (when again? (hand-on! options channel on-reconnect))
     (let [pg (.unwrap connection PGConnection)]
       (while @running?
         (when-let [batch (seq (read-batch pg options))]
-          (hand-on! on-notifications (vec batch)))))))
+          (hand-on! options channel on-notifications (vec batch)))))))
 
 (defn start-listening!
   "LISTENs on a channel (a plain Postgres name), as the options say
@@ -48,7 +46,7 @@
   (settings/check-listening-options options)
   (when-not (re-matches #"[a-z_][a-z0-9_]*" channel)
     (throw (ex-info (str "Not a channel name: " channel) {:type :cellar/bad-channel :channel channel})))
-  (let [{:keys [reconnect-after-ms stop-wait-ms]} options
+  (let [{:keys [log reconnect-after-ms stop-wait-ms]} options
         running? (atom true)
         thread   (Thread/startVirtualThread
                   (fn []
@@ -57,8 +55,9 @@
                         (try (listen-on-one-connection! pool channel running? again? options)
                              (catch Exception e
                                (when @running?
-                                 (.log logger System$Logger$Level/WARNING
-                                       (str "Listening on " channel " broke; again in " reconnect-after-ms " ms") ^Throwable e)
+                                 (log :warn :cellar/listening-broke {:cellar/channel            channel
+                                                                     :cellar/reconnect-after-ms reconnect-after-ms
+                                                                     :error                     e})
                                  (Thread/sleep (long reconnect-after-ms)))))
                         (recur true)))))]
     {:running? running? :thread thread :stop-wait-ms stop-wait-ms}))
