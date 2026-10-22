@@ -223,6 +223,13 @@
   [listener]
   (listen/stop-listening! listener))
 
+(defn is-listening?
+  "Whether a listener's connection is LISTENing now: false before it first
+   is, while a break waits to connect again, and once stopped. For a
+   gauge (doorbell's) or a status page."
+  [listener]
+  (listen/is-listening? listener))
+
 ;; -----------------------------------------------------------------------------
 ;; Tables
 

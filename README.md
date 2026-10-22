@@ -33,7 +33,7 @@ and [meter](https://github.com/p4ulcristian/meter) (the app's metrics, handed in
 | `turn-table-into-row-shape` | a table's rows as a malli shape |
 | `turn-key-into-column-name` `turn-table-key-into-table-name` `turn-table-name-into-table-key` | names: `:order/shop-id` ↔ `order__shop_id`, `:billing/invoices` ↔ `billing.invoices` |
 | `run-and-list-tables-read` | runs a function and returns what it returned with the tables its queries read, as Postgres's planner says; `{:log log}` first |
-| `start-listening!` `stop-listening!` | `LISTEN` on a channel, notifications in batches, a reconnect said and counted; its batch window, waits and reconnect delay written out |
+| `start-listening!` `stop-listening!` `is-listening?` | `LISTEN` on a channel, notifications in batches, a reconnect said and counted; its batch window, waits and reconnect delay written out; whether its connection is listening now |
 
 ```clojure
 (require '[cellar.api :as cellar])

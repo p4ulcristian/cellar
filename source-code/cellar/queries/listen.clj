@@ -27,7 +27,7 @@
        (catch Exception e
          (log :error :cellar/listener-function-failed {:cellar/channel channel :error e}))))
 
-(defn- listen-on-one-connection! [pool channel running? again? {:keys [on-notifications on-reconnect] :as options}]
+(defn- listen-on-one-connection! [pool channel running? listening? again? {:keys [on-notifications on-reconnect] :as options}]
   (sql/call-with-connection
    pool
    (fn [^Connection connection]
@@ -35,6 +35,7 @@
      (.setAutoCommit connection true)
      (with-open [statement (.createStatement connection)]
        (.execute statement (str "LISTEN " channel)))
+     (reset! listening? true)
      ;; told only once listening again, so nothing falls between
      (when again?
        (metrics/count-reconnect! (:meter options))
@@ -54,20 +55,30 @@
     (throw (ex-info (str "Not a channel name: " channel) {:type :cellar/bad-channel :channel channel})))
   (metrics/declare-listening-metrics! (:meter options))
   (let [{:keys [log reconnect-after-ms stop-wait-ms]} options
-        running? (atom true)
-        thread   (Thread/startVirtualThread
-                  (fn []
-                    (loop [again? false]
-                      (when @running?
-                        (try (listen-on-one-connection! pool channel running? again? options)
-                             (catch Exception e
-                               (when @running?
-                                 (log :warn :cellar/listening-broke {:cellar/channel            channel
-                                                                     :cellar/reconnect-after-ms reconnect-after-ms
-                                                                     :error                     e})
-                                 (Thread/sleep (long reconnect-after-ms)))))
-                        (recur true)))))]
-    {:running? running? :thread thread :stop-wait-ms stop-wait-ms}))
+        running?   (atom true)
+        listening? (atom false)
+        thread     (Thread/startVirtualThread
+                    (fn []
+                      (loop [again? false]
+                        (when @running?
+                          (try (listen-on-one-connection! pool channel running? listening? again? options)
+                               (catch Exception e
+                                 (reset! listening? false)
+                                 (when @running?
+                                   (log :warn :cellar/listening-broke {:cellar/channel            channel
+                                                                       :cellar/reconnect-after-ms reconnect-after-ms
+                                                                       :error                     e})
+                                   (Thread/sleep (long reconnect-after-ms)))))
+                          (recur true)))
+                      (reset! listening? false)))]
+    {:running? running? :listening? listening? :thread thread :stop-wait-ms stop-wait-ms}))
+
+(defn is-listening?
+  "Whether the listener's connection is LISTENing now: false before it
+   first is, while it is broken and waits to connect again, and once
+   stopped."
+  [{:keys [listening?]}]
+  @listening?)
 
 (defn stop-listening!
   "Stops listening: the thread ends within :check-stopped-every-ms (and the

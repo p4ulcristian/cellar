@@ -78,12 +78,15 @@
       (try
         (is (= ["cellar_listening_reconnects_total 0"] (find-metric-lines meter "cellar_listening_reconnects_total")))
         (Thread/sleep 300)
+        (is (true? (cellar/is-listening? listener)) "listening once its LISTEN ran")
         (cellar/find-rows pool (cellar/make-query-from-sql-text
                                 "end the listener"
                                 "SELECT pg_terminate_backend(pid) AS ended FROM pg_stat_activity WHERE query = 'LISTEN cellar_metrics_test'")
                           {})
         (is (true? (deref again 5000 false)))
+        (is (true? (cellar/is-listening? listener)) "and again after the break")
         (is (= ["cellar_listening_reconnects_total 1"] (find-metric-lines meter "cellar_listening_reconnects_total")))
         (finally
           (cellar/stop-listening! listener)
+          (is (false? (cellar/is-listening? listener)) "not once stopped")
           (cellar/stop-pool! pool))))))
