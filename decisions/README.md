@@ -1,0 +1,10 @@
+# cellar decisions
+
+One file per decision: `YYYY-MM-DD-what-we-decided.md`. The title is the decision. Each file says what we decided, why, and what we chose against. A decision changes by a new file; the old one says so at the top (`Replaced by` or `Changed in part by`), and nothing else in it is rewritten.
+
+The first three were made while cellar was a library inside Groundwork, a Clojure framework (groundwork.server.database; groundwork.sql and groundwork.schema before that); they name its parts (groundwork.sql, groundwork.schema, sync) where they came from. The ones they build on stayed with Groundwork: "A table is one map", "A table map says its column types in wire's words", "A migration runs in two parts", "A fresh database takes the maps as they are", and the older ones on the pool, TLS, time limits, names and real types. Gates (row-level security from a map's `:gates`) and `grant-tables-to-role!` were decided in Groundwork's access library.
+
+- [A query is made by a function from its .sql file](2026-10-22-a-query-is-made-by-a-function-from-its-sql-file.md)
+- [Changes are data, and v1 makes tables, columns, references, enums and indexes](2026-10-22-changes-are-data-and-what-v1-makes.md)
+- [A query knows the tables it reads; a table can call a function on change; NOTIFY can be heard](2026-10-22-a-query-knows-its-tables-and-postgres-can-be-heard.md), changed in part by [cellar is its own library](2026-10-22-cellar-is-its-own-library.md)
+- [cellar is its own library](2026-10-22-cellar-is-its-own-library.md)
