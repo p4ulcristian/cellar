@@ -81,6 +81,20 @@
             (migrate-and-wait! pool [unique-shops invoices] [])
             (is (= nothing-to-do (plan-of pool [unique-shops invoices] [])))))))))
 
+(deftest the-apps-own-role-can-check-the-database
+  (if-not port
+    (println "cellar.tables-test: skipped, CELLAR_TEST_PORT is not set")
+    (with-empty-database
+      (fn [pool]
+        (run-sql! pool "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'cellar_app') THEN CREATE ROLE cellar_app; END IF; END $$")
+        (migrate-and-wait! pool [shops orders] [{:id "c1" :rename-column [:orders :order/old :order/note]}])
+        (schema/grant-tables-to-role! pool [shops orders] "cellar_app")
+        (is (schema/run-in-transaction! pool
+              (fn [transaction]
+                (run-sql! transaction "SET LOCAL ROLE cellar_app")
+                (schema/does-database-match-tables? transaction [shops orders] [{:id "c1" :rename-column [:orders :order/old :order/note]}])))
+            "as the app's role, which owns nothing: the changes done are read, the database matches")))))
+
 (deftest the-row-shape-comes-from-the-map
   (is (= [:map [:shop/id :uuid] [:shop/name :string]] (schema/turn-table-into-row-shape shops)))
   (is (= [:order/note {:optional true} [:maybe :string]]

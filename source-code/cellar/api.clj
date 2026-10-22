@@ -285,9 +285,17 @@
 (defn grant-tables-to-role!
   "Lets the app's own database role use the tables of these maps: their
    folders, their rows (select, insert, update, delete), and the functions
-   in them. The role owns nothing, so the gates hold for it. Run by migrate
-   as the owner; safe to run again."
+   in them. The role owns nothing, so the gates hold for it. It may also
+   read cellar.changes_done, so it can check the database with
+   does-database-match-tables?. Run by migrate as the owner; safe to run
+   again."
   [pool tables role]
+  (sql/run-statement! pool create-changes-done {})
+  (sql/run-statement! pool (sql/make-query-from-sql-text
+                            (str "grant cellar.changes_done to " role)
+                            (str "GRANT USAGE ON SCHEMA cellar TO " role "; "
+                                 "GRANT SELECT ON cellar.changes_done TO " role))
+                      {})
   (doseq [folder (set (map (comp names/find-folder-of-table names/turn-table-key-into-table-name :table) tables))]
     (sql/run-statement! pool (sql/make-query-from-sql-text
                               (str "grant " folder " to " role)
