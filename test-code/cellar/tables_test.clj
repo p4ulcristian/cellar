@@ -103,7 +103,7 @@
         (run-sql! pool "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'cellar_app') THEN CREATE ROLE cellar_app; END IF; END $$")
         (migrate-and-wait! pool [shops orders] [{:id "c1" :rename-column [:orders :order/old :order/note]}])
         (schema/grant-tables-to-role! pool [shops orders] "cellar_app")
-        (is (schema/run-in-transaction! pool {:read-only? false}
+        (is (schema/run-in-transaction! pool {:read-only? false :log test-settings/log}
               (fn [transaction]
                 (run-sql! transaction "SET LOCAL ROLE cellar_app")
                 (schema/does-database-match-tables? transaction (test-settings/declare-tables [shops orders]) [{:id "c1" :rename-column [:orders :order/old :order/note]}])))

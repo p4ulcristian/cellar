@@ -28,5 +28,5 @@
 
 1. **The list lives on the transaction map `run-in-transaction!` makes** (`:cellar/after-commit`), so every transaction cellar opens has one; the probe's rolled-back transaction and the slow part's connection have none, and `run-after-commit!` refuses them as it refuses a pool, `:cellar/not-a-transaction`.
 2. **It runs once the connection is back in the pool**, after COMMIT, so the work doesn't hold one.
-3. **A failure is written to the log the pool was started with**, `:error :cellar/after-commit-failed {:cellar/pool <pool's name> :error e}`: the transaction carries no log of its own, so a message's request id is not on the line (an app that wants it catches inside its own `f`).
+3. **A failure is written to the caller's log**, `:error :cellar/after-commit-failed {:cellar/pool <pool's name> :error e}`: `run-in-transaction!` takes a required `:log`, `{:read-only? false :log log}`, which the transaction carries, so a message's line has its request id; work kept inside a nested call goes to that call's `:log` (the user's yes, 2026-10-23, from the review of the after-commit build: first it went to the pool's log, without the request id).
 4. **`run-after-commit!` returns nil** and takes `(f)` of no arguments, as the decision writes it.

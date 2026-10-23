@@ -36,7 +36,7 @@
           (is (= 42 (:order/id (sql/find-one-row pool find-orders-of-shop {:order/shop-id 7})))))
         (testing "a transaction that throws keeps nothing"
           (is (thrown? clojure.lang.ExceptionInfo
-                       (sql/run-in-transaction! pool {:read-only? false}
+                       (sql/run-in-transaction! pool {:read-only? false :log test-settings/log}
                          (fn [transaction]
                            (sql/run-statement! transaction insert-order {:order/id 43 :order/shop-id 7 :order/total 9.50M :order/at nil})
                            (throw (ex-info "no" {}))))))

@@ -251,9 +251,11 @@
 (defn run-in-transaction!
   "Runs (f transaction) in one transaction: kept when f returns, undone when
    it throws. Returns what f returns. Inside a transaction, it joins that one.
-   Options, every key required: {:read-only? false}; true, Postgres refuses
-   every write in it. Once it commits, the work run-after-commit! gave it
-   runs."
+   Options, every key required: {:read-only? false :log log}; :read-only?
+   true, Postgres refuses every write in it; :log, the caller's log (a
+   message's, with its request id), which the transaction carries. Once it
+   commits, the work run-after-commit! gave it runs, and one that throws is
+   written to that log."
   [pool-or-transaction options f]
   (sql/run-in-transaction! pool-or-transaction options f))
 
@@ -264,13 +266,15 @@
    in the same transaction. The list is per transaction: a nested
    run-in-transaction! joins the outer one's. It runs in order, on the
    same thread, once COMMIT has returned and the connection is back in the
-   pool; never after a rollback. One that throws is written to the pool's
-   log (:error :cellar/after-commit-failed {:cellar/pool … :error …}); the
-   commit stands and the rest still runs. Handed a pool, it refuses,
+   pool; never after a rollback. One that throws is written to the log of
+   the run-in-transaction! it was kept under (:error
+   :cellar/after-commit-failed {:cellar/pool … :error …}), the caller's,
+   so a message's line has its request id; the commit stands and the rest
+   still runs. Handed a pool, it refuses,
    :cellar/not-a-transaction. Lost if the process dies between the commit
    and the run.
 
-     (cellar/run-in-transaction! pool {:read-only? false}
+     (cellar/run-in-transaction! pool {:read-only? false :log log}
        (fn [transaction]
          (cellar/run-statement! transaction delete-promotion {:promotion/id id})
          (cellar/run-after-commit! transaction #(promotions/clear-cache!))))"
@@ -424,7 +428,8 @@
   (when (seq stops)
     (throw (ex-info (str "The database can't be brought to the maps:\n  " (str/join "\n  " stops))
                     {:type :cellar/stops :stops stops})))
-  (sql/run-in-transaction! pool {:read-only? false}
+  ;; cellar's own transaction, which keeps no work: the pool's log
+  (sql/run-in-transaction! pool {:read-only? false :log (:cellar/log pool)}
     (fn [transaction]
       (set-part-limits! transaction options true)
       (sql/run-statement! transaction create-changes-done {})

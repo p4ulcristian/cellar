@@ -142,10 +142,13 @@
    meter-entry])
 
 (def transaction-options-shape
-  "run-in-transaction!'s options. :read-only?: true, Postgres refuses every
-   write in it."
+  "run-in-transaction!'s options, every key required. :read-only?: true,
+   Postgres refuses every write in it. :log: the caller's log (a message's,
+   with its request id), which the transaction carries: work
+   run-after-commit! keeps on it that throws is written there."
   [:map {:closed true}
-   [:read-only? :boolean]])
+   [:read-only? :boolean]
+   log-entry])
 
 (def part-options-shape
   "run-instant-part!'s and run-slow-part!'s options: the time limits the

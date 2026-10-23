@@ -33,7 +33,7 @@
           (is (= ["cellar_pool_waiting_threads 0"] (find-metric-lines meter "cellar_pool_waiting_threads"))))
         (cellar/find-one-row pool select-one {})
         (cellar/find-one-row pool select-one {})
-        (cellar/run-in-transaction! pool {:read-only? true} #(cellar/find-one-row % sleep-a-little {}))
+        (cellar/run-in-transaction! pool {:read-only? true :log test-settings/log} #(cellar/find-one-row % sleep-a-little {}))
         (cellar/find-one-row pool (cellar/make-query-from-sql-text "metrics-test/made-after" "SELECT 2 AS two") {})
         (testing "every query's time, by its name; one made after the pool started is other"
           (is (= ["cellar_query_seconds_count{query=\"metrics-test/select-one\"} 2"
@@ -50,7 +50,7 @@
         (testing "a wait past :connection-wait-ms is a timeout"
           (is (= ["cellar_connection_timeouts_total 0"] (find-metric-lines meter "cellar_connection_timeouts_total")))
           (let [holding (promise)
-                held    (future (cellar/run-in-transaction! pool {:read-only? true}
+                held    (future (cellar/run-in-transaction! pool {:read-only? true :log test-settings/log}
                                                             (fn [_] (deliver holding true) (Thread/sleep 1000))))]
             (deref holding 2000 nil)
             (is (thrown? java.sql.SQLException (cellar/find-one-row pool select-one {})))

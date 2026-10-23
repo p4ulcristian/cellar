@@ -1,5 +1,7 @@
 # Every value that sets behaviour is a setting; no hidden defaults
 
+> **Changed in part** by [A transaction keeps work to run after its commit](2026-10-23-a-transaction-keeps-work-to-run-after-its-commit.md) (2026-10-23, on tidy-up): `run-in-transaction!` takes `{:read-only? false :log log}`, the caller's log required too.
+
 > **Changed in part** by [Checks, functions, views and extensions are declared, compared and dropped like tables](2026-10-23-checks-functions-views-and-extensions-are-declared-like-tables.md) (2026-10-23, on tidy-up): `migrate!`, `make-plan-from-tables` and `does-database-match-tables?` take `{:tables :extensions :functions :views}`, every key written out, in place of the tables.
 
 > **Changed in part** by [The pool and every query are counted on the app's meter](2026-10-23-the-pool-and-every-query-are-counted-on-the-apps-meter.md) (2026-10-23, v0.4.0): the pool's settings gain `:metric-buckets`, required.

@@ -191,7 +191,7 @@
     (let [pool (test-settings/start-pool! 1 10000)]
       (try
         (is (false? (cellar/is-transaction? pool)))
-        (is (true? (cellar/run-in-transaction! pool {:read-only? true} cellar/is-transaction?)))
+        (is (true? (cellar/run-in-transaction! pool {:read-only? true :log test-settings/log} cellar/is-transaction?)))
         (finally (cellar/stop-pool! pool))))))
 
 (def ^:private refusing-reference {:to :order/id :on-delete :refuse :on-update :refuse :checked-at :statement})
@@ -251,7 +251,7 @@
             (migrate-and-wait! pool [shops orders (notes-of at-commit)])
             (is (= nothing-to-do (plan-of pool [shops orders (notes-of at-commit)])))
             (testing "a note may name its order before the order is made, in one transaction"
-              (cellar/run-in-transaction! pool {:read-only? false}
+              (cellar/run-in-transaction! pool {:read-only? false :log test-settings/log}
                 (fn [transaction]
                   (let [order (random-uuid)
                         shop  (:shop/id (first (find-rows transaction "INSERT INTO shops DEFAULT VALUES RETURNING shop__id")))]
@@ -273,7 +273,7 @@
           (migrate-and-wait! pool [shops counted])
           (is (= nothing-to-do (plan-of pool [shops counted])))
           (let [[a b] (map :shop/id (find-rows pool "INSERT INTO shops (shop__id) VALUES (DEFAULT), (DEFAULT) RETURNING shop__id"))]
-            (cellar/run-in-transaction! pool {:read-only? false}
+            (cellar/run-in-transaction! pool {:read-only? false :log test-settings/log}
               (fn [transaction]
                 (run-sql! transaction (str "INSERT INTO orders (order__shop_id) VALUES ('" a "')"))
                 (run-sql! transaction (str "UPDATE orders SET order__shop_id = '" a "'"))

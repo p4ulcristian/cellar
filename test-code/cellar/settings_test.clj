@@ -68,8 +68,8 @@
     (is (= :meter/bad-metrics
            (:type (find-refusal #(cellar/start-pool! (assoc-in settings [:metric-buckets :query-seconds] [1 1])
                                                      (test-settings/make-pool-options)))))))
-  (testing "run-in-transaction! says :read-only?"
-    (is (= {:type :cellar/bad-options :errors {:read-only? ["missing required key"]}}
+  (testing "run-in-transaction! says :read-only? and the caller's :log"
+    (is (= {:type :cellar/bad-options :errors {:read-only? ["missing required key"] :log ["missing required key"]}}
            (find-refusal #(cellar/run-in-transaction! nil {} (fn [_]))))))
   (testing "start-listening! says each of its numbers and both functions"
     (let [{:keys [type errors]} (find-refusal #(cellar/start-listening! nil "things" {:on-notifications (fn [_])}))]

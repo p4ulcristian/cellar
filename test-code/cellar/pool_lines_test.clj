@@ -14,7 +14,7 @@
                       {:log (test-settings/make-log lines) :meter (test-settings/make-meter)}))
 
 (defn- hold-a-connection! [pool ms]
-  (cellar/run-in-transaction! pool {:read-only? true} (fn [_] (Thread/sleep (long ms)))))
+  (cellar/run-in-transaction! pool {:read-only? true :log test-settings/log} (fn [_] (Thread/sleep (long ms)))))
 
 (defn- find-said [lines text]
   (filterv (fn [[_ event data]] (and (= :cellar/pool-said event) (str/includes? (:cellar/message data) text))) @lines))

@@ -230,7 +230,7 @@
         (run-sql! pool "REVOKE CREATE ON SCHEMA public FROM PUBLIC")
         (migrate-and-wait! pool declared [])
         (cellar/grant-tables-to-role! pool (:tables declared) "cellar_app")
-        (is (cellar/run-in-transaction! pool {:read-only? false}
+        (is (cellar/run-in-transaction! pool {:read-only? false :log test-settings/log}
               (fn [transaction]
                 (run-sql! transaction "SET LOCAL ROLE cellar_app")
                 (cellar/does-database-match-tables? transaction declared [])))

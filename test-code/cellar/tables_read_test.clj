@@ -49,7 +49,7 @@
           (is (= [1 :unknown]
                  (database/run-and-list-tables-read
                   {:log test-settings/log}
-                  #(database/run-in-transaction! pool {:read-only? false}
+                  #(database/run-in-transaction! pool {:read-only? false :log test-settings/log}
                      (fn [transaction]
                        (database/find-one-row transaction find-untyped {:x "a"})
                        (run-sql! transaction "INSERT INTO things VALUES (1, 'a')"))))))
