@@ -1,10 +1,11 @@
--- Primary keys, foreign keys, unique keys and checks of the tables in the folders the maps name.
+-- Primary keys, foreign keys, unique keys and checks of the tables in the folders the maps name;
+-- a check's condition as Postgres prints it.
 SELECT CASE WHEN n.nspname = 'public' THEN c.relname::text ELSE n.nspname || '.' || c.relname END AS table_name,
        con.conname::text          AS constraint_name,
        con.contype::text          AS constraint_type,
        con.convalidated           AS validated,
        con.confupdtype::text      AS on_update,
-       pg_get_constraintdef(con.oid) AS definition,
+       CASE WHEN con.contype = 'c' THEN pg_get_expr(con.conbin, con.conrelid) END AS condition,
        (SELECT array_agg(a.attname::text ORDER BY k.ord)
         FROM unnest(con.conkey) WITH ORDINALITY k(attnum, ord)
         JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum) AS column_names,

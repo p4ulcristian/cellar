@@ -8,13 +8,17 @@
      :instant  changes only Postgres's catalog; runs before the app starts
      :slow     reads or writes every row; runs after, in the background
 
+   What the map names that Postgres has under another name, the same
+   shape, is adopted: renamed to the map's name (catalog only, no scan, no
+   rebuild). A key's shape is its columns and target; a check's and an
+   index's is how Postgres prints them (cellar.tables.probe).
+
    A difference that could lose data or that v1 can't make is a stop: a
    message, and nothing runs."
   (:require
    [clojure.set :as set]
    [clojure.string :as str]
    [cellar.tables.names :as names]
-   [cellar.tables.types :as types]
    [cellar.queries.postgres :as sql]))
 
 (defn- statement [sql-text why] {:sql sql-text :why why})
@@ -27,8 +31,9 @@
 ;; Change files, applied on paper
 
 (defn- rename-derived-names
-  "After a table or column rename, the constraints and indexes schema named
-   after the old names get the new ones (Postgres keeps the old names)."
+  "After a table or column rename, the keys cellar named after the old
+   names get the new ones (Postgres keeps the old names). Checks and
+   indexes are found by their shape instead, and adopted (adopt-pieces)."
   [state old-table new-table column-renames]
   (let [old-column (fn [c] (get (set/map-invert column-renames) c c))
         table      (get-in state [:catalog new-table])
@@ -39,23 +44,15 @@
                     (for [[n {:keys [columns]}] (:uniques table)
                           :when (= n (names/make-unique-name old-table (map old-column columns)))]
                       [:uniques n (names/make-unique-name new-table columns) :constraint])
-                    (for [[n {:keys [column]}] (:checks table)
-                          :when (= n (names/make-enum-check-name old-table (old-column column)))]
-                      [:checks n (names/make-enum-check-name new-table column) :constraint])
                     (for [[n {:keys [column]}] (:not-null-checks table)
                           :when (= n (names/make-not-null-check-name old-table (old-column column)))]
-                      [:not-null-checks n (names/make-not-null-check-name new-table column) :constraint])
-                    (for [[n {:keys [columns]}] (:indexes table)
-                          :when (= n (names/make-index-name old-table (map old-column columns)))]
-                      [:indexes n (names/make-index-name new-table columns) :index]))]
+                      [:not-null-checks n (names/make-not-null-check-name new-table column) :constraint]))]
     (reduce (fn [state [kind old-name new-name what]]
               (if (= old-name new-name)
                 state
                 (-> state
                     (update-in [:catalog new-table kind] set/rename-keys {old-name new-name})
-                    (add-instant (if (= :index what)
-                                   (str "ALTER INDEX " (names/qualify-index-name new-table old-name) " RENAME TO " new-name)
-                                   (str "ALTER TABLE " new-table " RENAME CONSTRAINT " old-name " TO " new-name))
+                    (add-instant (str "ALTER TABLE " new-table " RENAME CONSTRAINT " old-name " TO " new-name)
                                  (str "keep the name of " old-name " after a rename")))))
             state
             renames)))
@@ -70,14 +67,25 @@
                                     :foreign-columns (mapv #(get column-renames % %) foreign-columns))
                              fk))))))
 
+(defn rename-column-in-sql
+  "SQL as Postgres prints it, with the column from named to, as Postgres
+   will print it once the rename has run: the whole name only, never
+   inside a quoted text or name."
+  [sql-text from to]
+  (when sql-text
+    (str/replace sql-text
+                 (re-pattern (str "'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|\\b" (java.util.regex.Pattern/quote from) "\\b"))
+                 #(if (= % from) to %))))
+
 (defn- rename-column-in-table [table from to]
   (let [rename #(if (= % from) to %)]
     (-> table
+        (update :checks update-vals #(update % :condition rename-column-in-sql from to))
+        (update :indexes update-vals #(update % :body rename-column-in-sql from to))
         (update :columns (partial mapv #(update % :name rename)))
         (update :primary-key (partial mapv rename))
         (update :foreign-keys update-vals #(update % :columns (partial mapv rename)))
         (update :uniques update-vals #(update % :columns (partial mapv rename)))
-        (update :checks update-vals #(update % :column rename))
         (update :not-null-checks update-vals #(update % :column rename))
         (update :indexes update-vals #(update % :columns (partial mapv rename))))))
 
@@ -140,7 +148,6 @@
                                        (update :columns (partial filterv #(not (uses? (:name %)))))
                                        (update :foreign-keys #(into {} (remove (fn [[_ {:keys [columns]}]] (some uses? columns))) %))
                                        (update :uniques #(into {} (remove (fn [[_ {:keys [columns]}]] (some uses? columns))) %))
-                                       (update :checks #(into {} (remove (comp uses? :column val)) %))
                                        (update :not-null-checks #(into {} (remove (comp uses? :column val)) %))
                                        (update :indexes #(into {} (remove (fn [[_ {:keys [columns]}]] (some uses? columns))) %)))))))))
 
@@ -165,14 +172,70 @@
       :else (stop (str "not a change schema knows: " (pr-str (dissoc change :id)))))))
 
 ;; -----------------------------------------------------------------------------
+;; Adopting what Postgres has under another name
+
+(defn- find-adoptions
+  "[Postgres's name, the map's name] for each piece the map names that
+   Postgres hasn't under that name but has under another one no map
+   names, of the same shape (shape-of; nil is no shape, never the same)."
+  [existing desired shape-of]
+  (loop [wanted (remove #(contains? existing (key %)) desired)
+         free   (vec (remove #(contains? desired (key %)) existing))
+         found  []]
+    (if-let [[desired-name piece] (first wanted)]
+      (let [shape (shape-of piece)
+            match (when (some? shape) (first (filter #(= shape (shape-of (val %))) free)))]
+        (if match
+          (recur (rest wanted) (vec (remove #(= (key match) (key %)) free)) (conj found [(key match) desired-name]))
+          (recur (rest wanted) free found)))
+      found)))
+
+(def ^:private adopted-kinds
+  ;; kind, its shape, and how Postgres renames it
+  [[:foreign-keys #(select-keys % [:columns :foreign-table :foreign-columns]) :constraint]
+   [:uniques :columns :constraint]
+   [:checks :condition :constraint]
+   [:indexes #(when (:body %) [(:unique? %) (:body %)]) :index]])
+
+(defn- adopt-pieces
+  "A table's keys, checks and indexes Postgres has under another name, the
+   same shape as the map's: renamed to the map's name, in the instant part
+   (ALTER … RENAME changes only the catalog)."
+  [state table-name desired]
+  (reduce (fn [state [kind shape-of what]]
+            (reduce (fn [state [old-name new-name]]
+                      (-> state
+                          (update-in [:catalog table-name kind] set/rename-keys {old-name new-name})
+                          (add-instant (if (= :index what)
+                                         (str "ALTER INDEX " (names/qualify-index-name table-name old-name) " RENAME TO " new-name)
+                                         (str "ALTER TABLE " table-name " RENAME CONSTRAINT " old-name " TO " new-name))
+                                       (str "adopt " old-name " as " new-name ": the same as its map's"))))
+                    state
+                    (find-adoptions (get-in state [:catalog table-name kind]) (get desired kind) shape-of)))
+          state
+          adopted-kinds))
+
+(defn- add-printed
+  "A table's desired pieces with how Postgres prints them (the probe's):
+   a column's :default, a check's :condition, an index's :body."
+  [desired {:keys [defaults checks indexes]}]
+  (-> desired
+      (update :columns (partial mapv #(assoc % :default (get defaults (:name %)))))
+      (update :checks #(into {} (map (fn [[n check]] [n (assoc check :condition (get checks n))])) %))
+      (update :indexes #(into {} (map (fn [[n index]] [n (assoc index :body (get indexes n))])) %))))
+
+;; -----------------------------------------------------------------------------
 ;; Comparing a table
 
 (defn- write-column [{:keys [name type not-null? default-sql]}]
   (str name " " type (when not-null? " NOT NULL") (when default-sql (str " DEFAULT " default-sql))))
 
-(defn- write-enum-check [table-name check-name {:keys [column values]}]
-  (str "ALTER TABLE " table-name " ADD CONSTRAINT " check-name
-       " CHECK (" column " IN (" (str/join ", " (map types/quote-text values)) "))"))
+(defn- write-check [table-name check-name {:keys [sql]}]
+  (str "ALTER TABLE " table-name " ADD CONSTRAINT " check-name " CHECK (" sql ")"))
+
+(defn- write-index [table-name index-name {:keys [unique? sql-body]} concurrently?]
+  (str "CREATE " (when unique? "UNIQUE ") "INDEX " (when concurrently? "CONCURRENTLY IF NOT EXISTS ")
+       index-name " ON " table-name " " sql-body))
 
 (defn- write-foreign-key [table-name fk-name {:keys [columns foreign-table foreign-columns on-update]}]
   (str "ALTER TABLE " table-name " ADD CONSTRAINT " fk-name
@@ -216,11 +279,10 @@
     (add-instant state
                  (str "CREATE TABLE " table-name " (\n  " (str/join ",\n  " (write-table-parts table)) "\n)")
                  (str "missing table " table-name))
-    (reduce (fn [state [n check]] (add-instant state (write-enum-check table-name n check) (str "enum of new table " table-name)))
+    (reduce (fn [state [n check]] (add-instant state (write-check table-name n check) (str "check of new table " table-name)))
             state checks)
-    (reduce (fn [state [n {:keys [columns]}]]
-              (add-instant state (str "CREATE INDEX " n " ON " table-name " (" (str/join ", " columns) ")")
-                           (str "index of new table " table-name)))
+    (reduce (fn [state [n index]]
+              (add-instant state (write-index table-name n index false) (str "index of new table " table-name)))
             state indexes)))
 
 (defn- plan-foreign-keys-of-new-table [state table-name {:keys [foreign-keys]}]
@@ -230,7 +292,10 @@
               (add-instant state (write-foreign-key table-name n fk) (str "reference of new table " table-name))))
           state foreign-keys))
 
-(defn- plan-column [state table-name has-rows? existing {:keys [name type not-null? default default-sql volatile-default?] :as column}]
+(defn- plan-column
+  "A column: added, or compared with Postgres's. Its :default is how
+   Postgres prints the map's (cellar.tables.probe), on a table it has."
+  [state table-name has-rows? existing {:keys [name type not-null? default default-sql volatile-default?] :as column}]
   (let [where (str table-name "." name)]
     (if-not existing
       (cond
@@ -249,7 +314,7 @@
         (and (not not-null?) (:not-null? existing))
         (add-instant (str "ALTER TABLE " table-name " ALTER COLUMN " name " DROP NOT NULL") (str where " became optional"))
 
-        (not= default (:default existing))
+        (and (contains? column :default) (not= default (:default existing)))
         (add-instant (if default-sql
                        (str "ALTER TABLE " table-name " ALTER COLUMN " name " SET DEFAULT " default-sql)
                        (str "ALTER TABLE " table-name " ALTER COLUMN " name " DROP DEFAULT"))
@@ -404,42 +469,42 @@
                     (add-slow state (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows"))
                     :else state)))
               state (:foreign-keys desired))
-      ;; enums
+      ;; checks: compared as Postgres prints them; NOT VALID now, VALIDATE in the slow part
       (reduce (fn [state [n check]]
                 (let [found (get-in existing [:checks n])]
                   (cond
                     (nil? found)
                     (-> state
-                        (add-instant (str (write-enum-check table-name n check) " NOT VALID") (str "missing enum " n))
+                        (add-instant (str (write-check table-name n check) " NOT VALID") (str "missing check " n))
                         (add-slow (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows")))
-                    (not= (:values check) (:values found))
+                    (not= (:condition check) (:condition found))
                     (-> state
-                        (add-instant (str "ALTER TABLE " table-name " DROP CONSTRAINT " n) (str "enum " n " changed"))
-                        (add-instant (str (write-enum-check table-name n check) " NOT VALID") (str "enum " n " changed"))
+                        (add-instant (str "ALTER TABLE " table-name " DROP CONSTRAINT " n) (str "check " n " changed"))
+                        (add-instant (str (write-check table-name n check) " NOT VALID") (str "check " n " changed"))
                         (add-slow (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows")))
                     (not (:validated? found))
                     (add-slow state (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows"))
                     :else state)))
               state (:checks desired))
       (reduce (fn [state [n _]]
-                (if (contains? (:checks desired) n)
+                (if (or (contains? (:checks desired) n) (not (str/ends-with? n "_enum")))
                   state
                   (add-instant state (str "ALTER TABLE " table-name " DROP CONSTRAINT " n) (str "enum " n " is in no map"))))
               state (:checks existing))
-      ;; indexes: built and dropped CONCURRENTLY, in the slow part
-      (reduce (fn [state [n {:keys [columns]}]]
+      ;; indexes: compared as Postgres prints them; built and dropped CONCURRENTLY, in the slow part
+      (reduce (fn [state [n index]]
                 (let [found (get-in existing [:indexes n])]
                   (cond
                     (nil? found)
-                    (add-slow state (str "CREATE INDEX CONCURRENTLY IF NOT EXISTS " n " ON " table-name
-                                         " (" (str/join ", " columns) ")")
-                              (str "missing index " n))
+                    (add-slow state (write-index table-name n index true) (str "missing index " n))
                     (not (:valid? found))
                     (-> state
                         (add-slow (str "DROP INDEX CONCURRENTLY IF EXISTS " (names/qualify-index-name table-name n)) (str "index " n " was left invalid"))
-                        (add-slow (str "CREATE INDEX CONCURRENTLY IF NOT EXISTS " n " ON " table-name
-                                       " (" (str/join ", " columns) ")")
-                                  (str "rebuild index " n)))
+                        (add-slow (write-index table-name n index true) (str "rebuild index " n)))
+                    (not= [(:unique? index) (:body index)] [(:unique? found) (:body found)])
+                    (-> state
+                        (add-slow (str "DROP INDEX CONCURRENTLY IF EXISTS " (names/qualify-index-name table-name n)) (str "index " n " differs from its map"))
+                        (add-slow (write-index table-name n index true) (str "rebuild index " n)))
                     :else state)))
               state (:indexes desired))
       (reduce (fn [state [n _]]
@@ -448,16 +513,44 @@
                   (add-slow state (str "DROP INDEX CONCURRENTLY IF EXISTS " (names/qualify-index-name table-name n)) (str "index " n " is in no map"))))
               state (:indexes existing)))))
 
+(defn is-fresh?
+  "Whether the database is fresh: no change has run and Postgres has none
+   of the maps' tables. A fresh database takes the maps as they are."
+  [catalog desired changes-done]
+  (and (empty? changes-done) (not-any? #(contains? catalog %) (keys desired))))
+
+(defn list-tables-to-print
+  "The maps' tables the plan compares with Postgres's, whose pieces the
+   probe prints: those Postgres has, and those a pending change renames a
+   table into."
+  [catalog desired changes changes-done]
+  (let [renamed-into (set (for [{:keys [id rename-table]} changes
+                                :when (and rename-table (not (contains? changes-done id)))]
+                            (names/turn-table-key-into-table-name (second rename-table))))]
+    (if (is-fresh? catalog desired changes-done)
+      {}
+      (into {} (filter #(or (contains? catalog (key %)) (contains? renamed-into (key %)))) desired))))
+
 (defn make-plan
   "The plan from what Postgres has (catalog), what the maps say (desired),
-   the change files and which have run, and has-rows? (a table name -> whether
-   it has rows, asked only when it matters)."
-  [{:keys [catalog desired changes changes-done has-rows?]}]
-  (let [fresh?   (and (empty? changes-done) (not-any? #(contains? catalog %) (keys desired)))
+   how Postgres prints the maps' pieces (printed, the probe's, for the
+   tables list-tables-to-print names), the change files and which have
+   run, and has-rows? (a table name -> whether it has rows, asked only when
+   it matters)."
+  [{:keys [catalog desired printed changes changes-done has-rows?]}]
+  (let [fresh?   (is-fresh? catalog desired changes-done)
         pending  (remove #(contains? changes-done (:id %)) changes)
         start    {:catalog catalog :instant [] :slow [] :stops [] :waiting-references []
                   :changes-to-mark (mapv :id pending)}
         state    (if fresh? start (reduce apply-change start pending))
+        desired  (into {} (map (fn [[table-name table]]
+                                 [table-name (if (contains? (:catalog state) table-name)
+                                               (add-printed table (get printed table-name))
+                                               table)]))
+                       desired)
+        state    (reduce (fn [state table-name] (adopt-pieces state table-name (get desired table-name)))
+                         state
+                         (filter #(contains? (:catalog state) %) (keys desired)))
         catalog  (:catalog state)
         new      (remove #(contains? catalog %) (keys desired))
         folders  (->> new (map names/find-folder-of-table) (remove #{"public"}) distinct)

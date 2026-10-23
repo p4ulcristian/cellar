@@ -111,7 +111,8 @@
    [cellar.tables.catalog :as catalog]
    [cellar.tables.desired :as desired]
    [cellar.tables.names :as names]
-   [cellar.tables.plan :as plan]))
+   [cellar.tables.plan :as plan]
+   [cellar.tables.probe :as probe]))
 
 ;; -----------------------------------------------------------------------------
 ;; Queries
@@ -301,18 +302,26 @@
                                {})))
 
 (defn make-plan-from-tables
-  "What would make Postgres match the tables and changes, without running
+  "What would make Postgres match the tables and changes, without changing
    anything: {:instant [{:sql :why}] :slow [{:sql :why}] :stops [message]
-   :changes-to-mark [id]}."
+   :changes-to-mark [id]}. How Postgres prints the maps' checks, indexes
+   and defaults is asked of it in a transaction that is rolled back, on
+   empty temporary tables (cellar.tables.probe): the role needs the TEMP
+   right, and a transaction it is given can't be read-only."
   [pool tables changes]
   (settings/check-tables tables)
-  (let [desired (desired/turn-table-maps-into-desired tables)
-        folders (set (map names/find-folder-of-table (keys desired)))]
-    (plan/make-plan {:catalog      (catalog/read-catalog pool folders)
-                   :desired      desired
-                   :changes      changes
-                   :changes-done (set (map :change-done/id (find-changes-done-if-any pool)))
-                   :has-rows?    (memoize #(find-whether-table-has-rows pool %))})))
+  (let [desired      (desired/turn-table-maps-into-desired tables)
+        folders      (set (map names/find-folder-of-table (keys desired)))
+        catalog      (catalog/read-catalog pool folders)
+        changes-done (set (map :change-done/id (find-changes-done-if-any pool)))
+        {:keys [printed stops]} (probe/print-tables pool (plan/list-tables-to-print catalog desired changes changes-done))]
+    (update (plan/make-plan {:catalog      catalog
+                             :desired      desired
+                             :printed      printed
+                             :changes      changes
+                             :changes-done changes-done
+                             :has-rows?    (memoize #(find-whether-table-has-rows pool %))})
+            :stops into stops)))
 
 (defn run-instant-part!
   "Runs the plan's instant part and marks its changes done, in one

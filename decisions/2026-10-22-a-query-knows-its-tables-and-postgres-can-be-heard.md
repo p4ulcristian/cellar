@@ -1,5 +1,7 @@
 # A query knows the tables it reads; a table can call a function on change; NOTIFY can be heard
 
+> **Changed in part** by [cellar adopts what the database already has](2026-10-23-cellar-adopts-what-the-database-has-by-asking-postgres.md) (2026-10-23, on tidy-up): planning makes empty temporary tables in a transaction it rolls back, so the app's role checking the database needs the TEMP right, outside a read-only transaction.
+
 > **Changed in part** by [The app passes its log](2026-10-22-the-app-passes-its-log.md) (2026-10-22, v0.2.0): `run-and-list-tables-read` takes `{:log log}` first, and a listener's break and failures are written to the app's log.
 
 > **Changed in part** by [Every value that sets behaviour is a setting](2026-10-22-every-value-that-sets-behaviour-is-a-setting.md) (2026-10-22, v0.1.2): the listener's batch window, its wait, its reconnect delay and its stop wait are `start-listening!`'s required options, not 50 ms, 500 ms, 1 s and 2 s.

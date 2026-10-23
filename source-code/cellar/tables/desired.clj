@@ -12,8 +12,13 @@
       :gates     nil
       :on-change nil}
 
-   The maps are checked by cellar.settings/tables-shape before they come here."
+   A check is its SQL (:sql) and an index the SQL after its table
+   (:sql-body), as cellar writes them; a column's default is :default-sql.
+   How Postgres prints them comes from cellar.tables.probe, for the
+   comparing. The maps are checked by cellar.settings/tables-shape before
+   they come here."
   (:require
+   [clojure.string :as str]
    [cellar.tables.gates :as gates]
    [cellar.tables.names :as names]
    [cellar.tables.triggers :as triggers]
@@ -95,13 +100,11 @@
 (defn- turn-table-map-into-desired [table-maps tables-by-primary-key {:keys [table columns indexes gates on-change triggers]}]
   (let [table-name (names/turn-table-key-into-table-name table)
         column     (fn [[k type {:keys [optional? default]}]]
-                     (let [postgres-type (types/turn-type-into-postgres-type type)]
-                       {:name      (names/turn-key-into-column-name k)
-                        :type      postgres-type
-                        :not-null? (not optional?)
-                        :default   (some-> default (types/turn-default-into-shown-text postgres-type))
-                        :default-sql (some-> default types/turn-default-into-sql)
-                        :volatile-default? (types/is-default-volatile? default)}))
+                     {:name              (names/turn-key-into-column-name k)
+                      :type              (types/turn-type-into-postgres-type type)
+                      :not-null?         (not optional?)
+                      :default-sql       (some-> default types/turn-default-into-sql)
+                      :volatile-default? (types/is-default-volatile? default)})
         table-map  (first (filter #(= table (:table %)) table-maps))]
     (check-triggers table-name table-map)
     [table-name
@@ -120,7 +123,7 @@
                                 :when values
                                 :let [column-name (names/turn-key-into-column-name k)]]
                             [(names/make-enum-check-name table-name column-name)
-                             {:column column-name :values values}]))
+                             {:sql (str column-name " IN (" (str/join ", " (map types/quote-text values)) ")")}]))
       :gated?       (some? gates)
       :policies     (if gates (gates/turn-gates-into-policies (names/turn-table-key-into-table-name table) gates) {})
       :triggers     (merge (if on-change (triggers/turn-on-change-into-triggers table-name on-change) {})
@@ -128,7 +131,9 @@
       :indexes      (into {}
                           (for [index-keys indexes
                                 :let [column-names (mapv names/turn-key-into-column-name index-keys)]]
-                            [(names/make-index-name table-name column-names) {:columns column-names}]))}]))
+                            [(names/make-index-name table-name column-names)
+                             {:columns column-names :unique? false
+                              :sql-body (str "USING btree (" (str/join ", " column-names) ")")}]))}]))
 
 (defn- add-unique-keys-of-references
   "Postgres points a reference only at columns unique together: every

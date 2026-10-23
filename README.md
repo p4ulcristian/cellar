@@ -106,6 +106,16 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
 ;=> [#:order{:id #uuid "1d000000-…" :total 120.50M}]
 ```
 
+What a map names that Postgres already has under another name, the same
+shape, is adopted: renamed to the map's name (`ALTER … RENAME`, the catalog
+only, no scan, no rebuild). A key's shape is its columns and target; a
+check's condition, an index's body and a column's default are compared as
+Postgres prints them, asked of Postgres itself: the map's pieces are made
+on empty temporary tables in a transaction that is rolled back, and read
+back. Planning so needs the TEMP right and a transaction that isn't
+read-only; a piece Postgres refuses is a stop with its words
+([why](decisions/2026-10-23-cellar-adopts-what-the-database-has-by-asking-postgres.md)).
+
 Every setting, option and table key is required: a missing or unknown one
 is refused, named, with every other problem at once, before anything runs
 (`:cellar/bad-settings`, `:cellar/bad-options`, `:cellar/bad-tables`). The

@@ -8,13 +8,18 @@
                                                               :foreign-columns [\"shop__id\"] :on-update :refuse
                                                               :validated? true}}
                  :uniques      {\"orders_order__id_order__shop_id_key\" {:columns [\"order__id\" \"order__shop_id\"]}}
-                 :checks       {\"orders_order__status_enum\" {:column \"order__status\" :values [\"draft\" \"done\"] :validated? true}}
-                 :indexes      {\"orders_order__shop_id_idx\" {:columns [\"order__shop_id\"] :valid? true}}}}
+                 :checks       {\"orders_order__status_enum\" {:condition \"(order__status = ANY (ARRAY['draft'::text, 'done'::text]))\"
+                                                           :validated? true}}
+                 :indexes      {\"orders_order__shop_id_idx\" {:columns [\"order__shop_id\"] :unique? false
+                                                           :body \"USING btree (order__shop_id)\" :valid? true}}}}
 
-   Only what schema makes is read: unique keys, checks whose names end in
-   _enum or _not_null, indexes that are neither unique nor a primary key,
-   row security and policies, and triggers (but Postgres's own).
-   A table outside the public folder is named folder.table."
+   A check's condition and an index's body are as Postgres prints them, so
+   the map's, printed by Postgres too (cellar.tables.probe), compare with
+   them exactly. Read: unique keys, every check (those whose names end in
+   _not_null, cellar's step to a required column, apart), indexes that are
+   neither unique nor a primary key, row security and policies, and
+   triggers (but Postgres's own). A table outside the public folder is
+   named folder.table."
   (:require
    [clojure.string :as str]
    [cellar.queries.postgres :as sql]))
@@ -50,17 +55,28 @@
               tables))
           tables (sql/find-rows pool find-triggers params)))
 
-(defn find-values-in-check
-  "The text values a CHECK (… = ANY (ARRAY['a'::text, …])) allows, in order."
+(def ^:private sql-name
+  ;; a name as Postgres prints it: plain, or in double quotes
+  "(?:\"(?:[^\"]|\"\")*\"|[^\\s\"])+")
+
+(def ^:private index-definition
+  (re-pattern (str "(?s)^CREATE (?:UNIQUE )?INDEX " sql-name " ON (?:ONLY )?" sql-name " (USING .*)$")))
+
+(defn find-body-of-index
+  "What follows the table in an index's definition as pg_get_indexdef
+   prints it: \"USING btree (order__shop_id) WHERE (…)\". Its name and its
+   table are left out, so two indexes on two tables compare."
   [definition]
-  (mapv #(str/replace (second %) "''" "'") (re-seq #"'((?:[^']|'')*)'::text" definition)))
+  (or (second (re-find index-definition definition))
+      (throw (ex-info (str "An index definition cellar can't read: " definition)
+                      {:type :cellar/unread-index :definition definition}))))
 
 (def ^:private on-update-actions
   "pg_constraint's confupdtype: no action is cellar's :refuse; the others
    cellar never makes, so a map never says them and they differ."
   {"a" :refuse "c" :cascade "r" :restrict "n" :set-null "d" :set-default})
 
-(defn- add-constraint [tables {:keys [table-name constraint-name constraint-type validated definition on-update
+(defn- add-constraint [tables {:keys [table-name constraint-name constraint-type validated condition on-update
                                       column-names foreign-table foreign-column-names]}]
   (case constraint-type
     "p" (assoc-in tables [table-name :primary-key] column-names)
@@ -71,14 +87,11 @@
                    :on-update       (get on-update-actions on-update)
                    :validated?      validated})
     "u" (assoc-in tables [table-name :uniques constraint-name] {:columns (vec column-names)})
-    "c" (cond
-          (str/ends-with? constraint-name "_enum")
-          (assoc-in tables [table-name :checks constraint-name]
-                    {:column (first column-names) :values (find-values-in-check definition) :validated? validated})
-          (str/ends-with? constraint-name "_not_null")
+    "c" (if (str/ends-with? constraint-name "_not_null")
           (assoc-in tables [table-name :not-null-checks constraint-name]
                     {:column (first column-names) :validated? validated})
-          :else tables)
+          (assoc-in tables [table-name :checks constraint-name]
+                    {:condition condition :validated? validated}))
     tables))
 
 (defn read-catalog
@@ -97,10 +110,11 @@
                              empty-tables
                              (sql/find-rows pool find-columns params))
         with-constraints (reduce add-constraint with-columns (sql/find-rows pool find-constraints params))]
-    (-> (reduce (fn [tables {:keys [table-name index-name valid is-unique is-primary column-names]}]
-                  (if (or is-unique is-primary)
+    (-> (reduce (fn [tables {:keys [table-name index-name valid is-unique is-primary backs-constraint definition column-names]}]
+                  (if (or is-unique is-primary backs-constraint)
                     tables
-                    (assoc-in tables [table-name :indexes index-name] {:columns column-names :valid? valid})))
+                    (assoc-in tables [table-name :indexes index-name]
+                              {:columns (vec column-names) :unique? is-unique :body (find-body-of-index definition) :valid? valid})))
                 with-constraints
                 (sql/find-rows pool find-indexes params))
         (add-gates params pool)

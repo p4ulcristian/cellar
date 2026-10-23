@@ -1,6 +1,7 @@
 (ns cellar.tables.types
-  "A column's type in wire's words as Postgres's type, and a default as SQL
-   and as Postgres shows it back (pg_get_expr), so the two can be compared.")
+  "A column's type in wire's words as Postgres's type, and a default as
+   SQL. How Postgres prints a default back is asked of it
+   (cellar.tables.probe), not foretold.")
 
 (def ^:private postgres-types
   ;; as format_type names them, which is also valid in CREATE TABLE
@@ -44,18 +45,6 @@
     (string? default)        (quote-text default)
     :else (throw (ex-info (str "Not a default cellar can write: " (pr-str default))
                           {:type :cellar/bad-default :default default}))))
-
-(defn turn-default-into-shown-text
-  "A :default as Postgres shows it back for a column of this Postgres type."
-  [default postgres-type]
-  (cond
-    (= :random-uuid default) "gen_random_uuid()"
-    (= :now default)         "now()"
-    (boolean? default)       (str default)
-    (number? default)        (if (neg? default)
-                               (str "'" default "'::" (if (integer? default) "integer" "numeric"))
-                               (str default))
-    (string? default)        (str (quote-text default) "::" postgres-type)))
 
 (defn is-default-volatile?
   "Whether Postgres computes the default anew for each row, which makes

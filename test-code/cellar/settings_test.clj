@@ -101,8 +101,8 @@
                                                                       [:thing/note :string]
                                                                       [:thing/when :time/instant {:optional? true}]]))))
     (let [[[_ things]] (seq (desired/turn-table-maps-into-desired [(assoc a-table :columns [[:thing/id :int]])]))]
-      (is (= [{:name "thing__id" :not-null? true :default nil}]
-             (mapv #(select-keys % [:name :not-null? :default]) (:columns things))))
+      (is (= [{:name "thing__id" :not-null? true :default-sql nil}]
+             (mapv #(select-keys % [:name :not-null? :default-sql]) (:columns things))))
       (is (= [[] {} {}] [(:primary-key things) (:uniques things) (:foreign-keys things)]))))
   (testing "an unknown option is refused, named"
     (is (= {:type :cellar/bad-tables :errors [{:columns [[nil nil {:primary? ["disallowed key"]}]]}]}
