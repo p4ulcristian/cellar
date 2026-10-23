@@ -24,7 +24,7 @@
       (finally (cellar/stop-pool! pool)))))
 
 (defn- plan-of [pool tables]
-  (select-keys (cellar/make-plan-from-tables pool tables []) [:instant :slow :stops :changes-to-mark]))
+  (select-keys (cellar/make-plan-from-tables pool (test-settings/declare-tables tables) []) [:instant :slow :stops :changes-to-mark]))
 
 (def ^:private nothing-to-do {:instant [] :slow [] :stops [] :changes-to-mark []})
 
@@ -41,13 +41,14 @@
                 [:job/slots    [:json [:vector [:map [:slot/day :time/local-date]]]]]]
    :indexes    []
    :uniques    []
+   :checks     []
    :references []
    :triggers   []
    :gates      nil
    :on-change  nil})
 
 (deftest each-type-is-the-postgres-type-it-names
-  (let [refusal (fn [type] (:type (ex-data (try (cellar/make-plan-from-tables nil [(assoc-in jobs [:columns 2 1] type)] [])
+  (let [refusal (fn [type] (:type (ex-data (try (cellar/make-plan-from-tables nil (test-settings/declare-tables [(assoc-in jobs [:columns 2 1] type)]) [])
                                                 (catch Exception e e)))))]
     (doseq [type [[:string {:min 1}] [:int {:min 0}] [:int {:min 0 :max 10}] [:decimal {:precision 10}]
                   [:decimal {:precision 2 :scale 3}] [:enum {:max 2} "abc"] [:vector [:enum "a"]] [:vector [:json :any]]
@@ -57,7 +58,7 @@
     (println "cellar.types-test: skipped, CELLAR_TEST_PORT is not set")
     (with-empty-database
       (fn [pool]
-        @(:slow-part (cellar/migrate! pool [jobs] [] test-settings/migrate-options))
+        @(:slow-part (cellar/migrate! pool (test-settings/declare-tables [jobs]) [] test-settings/migrate-options))
         (is (= nothing-to-do (plan-of pool [jobs])))
         (is (= [["job__id" "uuid"] ["job__status" "character varying(10)"] ["job__kind" "character varying(10)"]
                 ["job__height" "integer"] ["job__year" "smallint"] ["job__min_qty" "numeric(10,2)"]

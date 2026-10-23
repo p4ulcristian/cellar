@@ -15,6 +15,7 @@
    :columns    [[:shop/id :uuid {:primary-key? true :default :random-uuid}]]
    :indexes    []
    :uniques    []
+   :checks     []
    :references []
    :triggers   []
    :gates      nil
@@ -26,6 +27,7 @@
                 [:order/shop-id :uuid {:references {:to :shop/id :on-delete :refuse :on-update :refuse :checked-at :statement}}]]
    :indexes    []
    :uniques    []
+   :checks     []
    :references []
    :triggers   []
    :gates      nil
@@ -42,6 +44,7 @@
                 [:job/shop-id  :uuid]]
    :indexes    [{:columns [[:job/order-id :ascending :nulls-last]] :method :btree :ops {} :unique? false :where nil}]
    :uniques    []
+   :checks     []
    :references [{:columns [:job/order-id :job/shop-id] :to [:order/id :order/shop-id] :on-delete :refuse :on-update :cascade :checked-at :statement}]
    :triggers   [fill-trigger]
    :gates      nil
@@ -53,45 +56,46 @@
 (defn- find-rows [pool text]
   (cellar/find-rows pool (cellar/make-query-from-sql-text "test" text) {}))
 
-(def ^:private create-fill-function
-  (str "CREATE OR REPLACE FUNCTION public.fill_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-       "SELECT order__shop_id INTO NEW.job__shop_id FROM orders WHERE order__id = NEW.job__order_id; RETURN NEW; END $$"))
+(defn- declare-with-fill
+  "These tables, and the functions the tests' triggers call: the jobs'
+   fill (cellar/fill_job.sql) and a counter (cellar/count_moves.sql)."
+  [tables]
+  {:tables tables :extensions [] :functions ["cellar/fill_job.sql" "cellar/count_moves.sql"] :views []})
 
 (defn- with-empty-database [f]
   (let [pool (test-settings/start-pool! 4 10000)]
     (try
       (run-sql! pool "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; DROP SCHEMA IF EXISTS cellar CASCADE")
-      (run-sql! pool create-fill-function)
       (f pool)
       (finally (cellar/stop-pool! pool)))))
 
 (defn- migrate-and-wait! [pool tables]
-  @(:slow-part (cellar/migrate! pool tables [] test-settings/migrate-options)))
+  @(:slow-part (cellar/migrate! pool (declare-with-fill tables) [] test-settings/migrate-options)))
 
 (defn- plan-of [pool tables]
-  (select-keys (cellar/make-plan-from-tables pool tables []) [:instant :slow :stops :changes-to-mark]))
+  (select-keys (cellar/make-plan-from-tables pool (declare-with-fill tables) []) [:instant :slow :stops :changes-to-mark]))
 
 (def ^:private nothing-to-do {:instant [] :slow [] :stops [] :changes-to-mark []})
 
 (deftest a-reference-over-several-columns-names-its-targets-primary-key
   (is (= :cellar/bad-reference
-         (:type (ex-data (try (cellar/make-plan-from-tables nil [shops orders (assoc-in jobs [:references 0 :to] [:order/shop-id :order/id :order/shop-id])] [])
+         (:type (ex-data (try (cellar/make-plan-from-tables nil (declare-with-fill [shops orders (assoc-in jobs [:references 0 :to] [:order/shop-id :order/id :order/shop-id])]) [])
                               (catch Exception e e)))))
       "columns and :to pair up")
   (let [shopless (assoc jobs :references [{:columns [:job/shop-id :job/shop-id] :to [:order/shop-id :order/shop-id] :on-delete :refuse :on-update :cascade :checked-at :statement}])]
     (is (re-find #"primary key among :to"
-                 (ex-message (try (cellar/make-plan-from-tables nil [shops orders shopless] []) (catch Exception e e))))))
+                 (ex-message (try (cellar/make-plan-from-tables nil (declare-with-fill [shops orders shopless]) []) (catch Exception e e))))))
   (is (= :cellar/bad-tables
-         (:type (ex-data (try (cellar/make-plan-from-tables nil [shops orders (assoc-in jobs [:references 0 :columns] [:job/order-id])] [])
+         (:type (ex-data (try (cellar/make-plan-from-tables nil (declare-with-fill [shops orders (assoc-in jobs [:references 0 :columns] [:job/order-id])]) [])
                               (catch Exception e e)))))
       "a one-column reference is the column's :references"))
 
 (deftest a-triggers-update-of-names-its-columns-with-update
   (is (= :cellar/bad-trigger
-         (:type (ex-data (try (cellar/make-plan-from-tables nil [shops orders (assoc-in jobs [:triggers 0 :events] #{:insert})] [])
+         (:type (ex-data (try (cellar/make-plan-from-tables nil (declare-with-fill [shops orders (assoc-in jobs [:triggers 0 :events] #{:insert})]) [])
                               (catch Exception e e))))))
   (is (= :cellar/bad-trigger
-         (:type (ex-data (try (cellar/make-plan-from-tables nil [shops orders (assoc-in jobs [:triggers 0 :update-of] [:job/nothing])] [])
+         (:type (ex-data (try (cellar/make-plan-from-tables nil (declare-with-fill [shops orders (assoc-in jobs [:triggers 0 :update-of] [:job/nothing])]) [])
                               (catch Exception e e)))))))
 
 (deftest a-fresh-database-gets-the-reference-its-unique-key-and-the-trigger
@@ -173,13 +177,13 @@
                           (assoc-in [:references 0 :columns] [:job/parent-id :job/shop-id])
                           (assoc-in [:triggers 0 :update-of] [:job/parent-id]))
               changes [{:id "r1" :rename-column [:jobs :job/order-id :job/parent-id]}]
-              plan    (cellar/make-plan-from-tables pool [shops orders renamed] changes)]
+              plan    (cellar/make-plan-from-tables pool (declare-with-fill [shops orders renamed]) changes)]
           (is (= [] (:stops plan)))
           (is (some #(= "ALTER TABLE jobs RENAME CONSTRAINT jobs_job__order_id_job__shop_id_fkey TO jobs_job__parent_id_job__shop_id_fkey" (:sql %))
                     (:instant plan)))
-          @(:slow-part (cellar/migrate! pool [shops orders renamed] changes test-settings/migrate-options))
+          @(:slow-part (cellar/migrate! pool (declare-with-fill [shops orders renamed]) changes test-settings/migrate-options))
           (is (= {:instant [] :slow [] :stops [] :changes-to-mark []}
-                 (select-keys (cellar/make-plan-from-tables pool [shops orders renamed] changes) [:instant :slow :stops :changes-to-mark]))))))))
+                 (select-keys (cellar/make-plan-from-tables pool (declare-with-fill [shops orders renamed]) changes) [:instant :slow :stops :changes-to-mark]))))))))
 
 (deftest is-transaction-tells-a-transaction-from-a-pool
   (if-not port
@@ -198,6 +202,7 @@
                 [:note/order-id :uuid {:optional? true :references reference}]]
    :indexes    []
    :uniques    []
+   :checks     []
    :references []
    :triggers   []
    :gates      nil
@@ -205,11 +210,11 @@
 
 (deftest a-reference-says-what-it-does-on-delete-update-and-when-checked
   (is (= :cellar/bad-reference
-         (:type (ex-data (try (cellar/make-plan-from-tables nil [shops orders (assoc-in jobs [:columns 1 2 :references :on-delete] :set-null)] [])
+         (:type (ex-data (try (cellar/make-plan-from-tables nil (declare-with-fill [shops orders (assoc-in jobs [:columns 1 2 :references :on-delete] :set-null)]) [])
                               (catch Exception e e)))))
       ":set-null on a column that isn't :optional? is refused")
   (is (= :cellar/bad-tables
-         (:type (ex-data (try (cellar/make-plan-from-tables nil [shops orders (update-in jobs [:columns 1 2 :references] dissoc :checked-at)] [])
+         (:type (ex-data (try (cellar/make-plan-from-tables nil (declare-with-fill [shops orders (update-in jobs [:columns 1 2 :references] dissoc :checked-at)]) [])
                               (catch Exception e e)))))
       "every key written out")
   (if-not port
@@ -262,9 +267,6 @@
     (println "cellar.references-test: skipped, CELLAR_TEST_PORT is not set")
     (with-empty-database
       (fn [pool]
-        (run-sql! pool (str "CREATE OR REPLACE FUNCTION public.count_moves() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-                            "PERFORM set_config('test.moves', (coalesce(nullif(current_setting('test.moves', true), ''), '0')::int + 1)::text, false); "
-                            "RETURN NEW; END $$"))
         (let [moved  {:function "public.count_moves" :arguments [] :timing :before :events #{:update} :update-of nil :for-each :row
                       :when "OLD.order__shop_id IS DISTINCT FROM NEW.order__shop_id"}
               counted (assoc orders :triggers [moved])]
@@ -289,6 +291,7 @@
    :columns    [[:role/id :uuid {:primary-key? true :default :random-uuid}]]
    :indexes    []
    :uniques    []
+   :checks     []
    :references []
    :triggers   []
    :gates      nil
@@ -299,6 +302,7 @@
    :columns    columns
    :indexes    []
    :uniques    []
+   :checks     []
    :references []
    :triggers   []
    :gates      nil
@@ -315,13 +319,13 @@
         (let [invitations (invitations-of [[:invitation/id :uuid {:primary-key? true :default :random-uuid}]
                                            [:invitation/role-id :uuid {:optional? true}]])
               changes     [{:id "d1" :drop-table :legacy/roles :why "roles moved to doorman"}]
-              {:keys [instant stops]} (cellar/make-plan-from-tables pool [invitations] changes)]
+              {:keys [instant stops]} (cellar/make-plan-from-tables pool (declare-with-fill [invitations]) changes)]
           (testing "the map no longer names the reference: it goes before the table, in the check and in the statements"
             (is (= [] stops))
             (is (= ["ALTER TABLE invitations DROP CONSTRAINT invitations_invitation__role_id_fkey"
                     "DROP TABLE legacy.roles"]
                    (map :sql instant))))
-          @(:slow-part (cellar/migrate! pool [invitations] changes test-settings/migrate-options))
+          @(:slow-part (cellar/migrate! pool (declare-with-fill [invitations]) changes test-settings/migrate-options))
           (is (= {:instant [] :slow [] :stops [] :changes-to-mark []}
-                 (select-keys (cellar/make-plan-from-tables pool [invitations] changes) [:instant :slow :stops :changes-to-mark])))
+                 (select-keys (cellar/make-plan-from-tables pool (declare-with-fill [invitations]) changes) [:instant :slow :stops :changes-to-mark])))
           (is (= [] (find-rows pool "SELECT relname FROM pg_class WHERE relname = 'roles'"))))))))

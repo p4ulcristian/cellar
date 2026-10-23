@@ -1,5 +1,7 @@
 # Changes are data, and v1 makes tables, columns, references, enums and indexes
 
+> **Changed in part** by [Checks, functions, views and extensions are declared, compared and dropped like tables](2026-10-23-checks-functions-views-and-extensions-are-declared-like-tables.md) (2026-10-23, on tidy-up): `migrate!` takes `{:tables :extensions :functions :views}`; a table's `:checks`, and every check no map names is dropped; a fresh database gets the functions, views and extensions from their files.
+
 > **Changed in part** by [A column's type states Postgres's limit, in malli's words](2026-10-23-a-columns-type-states-postgres-limit-in-malli-words.md) (2026-10-23, on tidy-up): a column's type is varchar(n), integer, smallint, numeric(p,s), an array or jsonb too, as its malli words say.
 
 > **Changed in part** by [The references no map names go before the changes](2026-10-23-references-no-map-names-go-before-the-changes.md) (2026-10-23, on tidy-up): a reference no map names is dropped before the changes are checked and run, so a table only it pointed at can be dropped.

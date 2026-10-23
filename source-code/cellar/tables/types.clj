@@ -101,19 +101,29 @@
   (str "'" (.replace ^String (str s) "'" "''") "'"))
 
 (defn turn-default-into-sql
-  "A column's :default as SQL: :random-uuid, :now, a number, true/false, text."
-  [default]
-  (cond
-    (= :random-uuid default) "gen_random_uuid()"
-    (= :now default)         "now()"
-    (boolean? default)       (str default)
-    (number? default)        (if (neg? default) (str "(" default ")") (str default))
-    (string? default)        (quote-text default)
-    :else (throw (ex-info (str "Not a default cellar can write: " (pr-str default))
-                          {:type :cellar/bad-default :default default}))))
+  "A column's :default as SQL, for a column of this Postgres type:
+   :random-uuid, :time-ordered-uuid, :now, :today, a number, true/false,
+   text, or [] or {} (empty JSON; [] an empty array on an array column).
+   [] or {} on a column they can't fill throws :cellar/bad-default."
+  [default postgres-type]
+  (let [array? (.endsWith ^String postgres-type "[]")
+        json?  (= "jsonb" postgres-type)]
+    (cond
+      (= :random-uuid default)       "gen_random_uuid()"
+      (= :time-ordered-uuid default) "uuidv7()"
+      (= :now default)               "now()"
+      (= :today default)             "CURRENT_DATE"
+      (boolean? default)             (str default)
+      (number? default)              (if (neg? default) (str "(" default ")") (str default))
+      (string? default)              (quote-text default)
+      (and (= [] default) json?)     "'[]'"
+      (and (= [] default) array?)    "'{}'"
+      (and (= {} default) json?)     "'{}'"
+      :else (throw (ex-info (str "Not a default cellar can write for " postgres-type ": " (pr-str default))
+                            {:type :cellar/bad-default :default default})))))
 
 (defn is-default-volatile?
   "Whether Postgres computes the default anew for each row, which makes
    adding the column to a table with rows rewrite the table."
   [default]
-  (= :random-uuid default))
+  (contains? #{:random-uuid :time-ordered-uuid} default))

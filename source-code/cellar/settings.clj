@@ -241,15 +241,19 @@
   "A column's options, only the ones it has; an unsaid one is no or none,
    the safe side: NOT NULL, not unique, not a primary key, no default, no
    reference. :primary-key? :optional? (NULL allowed) :unique?, true or
-   false; :default, nil for none, or :random-uuid, :now, a number,
-   true/false or text; :references, nil, or a map: another table's one-column
+   false; :default, nil for none, or :random-uuid (gen_random_uuid()),
+   :time-ordered-uuid (Postgres 18's uuidv7()), :now (the transaction's
+   moment), :today (CURRENT_DATE), a number, true/false, text, or [] or {}
+   (empty, on a :json column; [] on a :vector one too); :references, nil,
+   or a map: another table's one-column
    primary key and what its reference does (reference-of-column-shape).
    Closed: an unknown key is refused."
   [:map {:closed true}
    [:primary-key? {:optional true} :boolean]
    [:optional? {:optional true} :boolean]
    [:unique? {:optional true} :boolean]
-   [:default {:optional true} [:maybe [:or [:enum :random-uuid :now] number? boolean? :string]]]
+   [:default {:optional true} [:maybe [:or [:enum :random-uuid :time-ordered-uuid :now :today]
+                                       number? boolean? :string [:and vector? empty?] [:and map? empty?]]]]
    [:references {:optional true} [:maybe reference-of-column-shape]]])
 
 (def column-shape
@@ -307,7 +311,8 @@
    each an index-shape, [] for none; :uniques, unique keys over several
    plain columns, [[key key …] …], [] for none (one column's is its
    {:unique? true}; one with a condition or an expression is an index
-   with :unique? true); :references, references over several columns
+   with :unique? true); :checks, SQL conditions every row holds, [] for
+   none; :references, references over several columns
    (reference-shape), [] for none (a one-column one is the column's
    :references); :triggers, the triggers declared on it (trigger-shape),
    [] for none; :gates, nil for none (no row-level security), or a SQL
@@ -319,6 +324,7 @@
    [:columns [:sequential column-shape]]
    [:indexes [:sequential index-shape]]
    [:uniques [:sequential [:sequential {:min 2} :qualified-keyword]]]
+   [:checks [:sequential :string]]
    [:references [:sequential reference-shape]]
    [:triggers [:sequential trigger-shape]]
    [:gates [:maybe [:map {:closed true}
@@ -333,6 +339,20 @@
 (def tables-shape
   "The table maps."
   [:sequential table-shape])
+
+(def declared-shape
+  "What the app declares its database has, every key written out:
+   :tables, the table maps; :extensions, the extensions' names
+   (\"pg_trgm\"), [] for none; :functions, the .sql files on the
+   classpath that make its functions, one CREATE OR REPLACE FUNCTION each,
+   [] for none; :views, the .sql files that make its views, one CREATE
+   VIEW each, in the order they are made (a view after those it reads),
+   [] for none."
+  [:map {:closed true}
+   [:tables tables-shape]
+   [:extensions [:sequential :string]]
+   [:functions [:sequential :string]]
+   [:views [:sequential :string]]])
 
 ;; -----------------------------------------------------------------------------
 ;; Checking
@@ -370,3 +390,6 @@
 
 (defn check-tables [tables]
   (check-data-for-shape "The tables" :cellar/bad-tables tables-shape tables))
+
+(defn check-declared [declared]
+  (check-data-for-shape "The tables and objects" :cellar/bad-tables declared-shape declared))

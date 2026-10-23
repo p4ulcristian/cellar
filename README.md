@@ -27,7 +27,7 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
 | `find-rows` `find-one-row` `run-statement!` | run a query on a pool or a transaction |
 | `run-in-transaction!` | `(f transaction)` in one transaction, kept or undone; `{:read-only? true}` refuses writes, `false` written out otherwise |
 | `is-transaction?` | whether it was handed a transaction rather than a pool |
-| `make-plan-from-tables` | what would bring Postgres to the maps and changes, running nothing: `{:instant :slow :stops :changes-to-mark}` |
+| `make-plan-from-tables` | what would bring Postgres to the tables, extensions, functions and views the app declares, and the changes, changing nothing: `{:instant :slow :stops :changes-to-mark}` |
 | `run-instant-part!` `run-slow-part!` | run a plan's two parts (the deploy), each under its own statement and lock time limits |
 | `migrate!` | plan, run the instant part now and the slow part on a thread, each planned statement written to the log |
 | `does-database-match-tables?` | whether the app can start: no instant part, stop or change left |
@@ -67,6 +67,7 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
                [:shop/name :string]]
    :indexes   []
    :uniques   []
+   :checks    []
    :references []
    :triggers  []
    :gates     nil
@@ -88,6 +89,7 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
                {:columns [[:order/customer-note :unordered]]
                 :method  :gin :ops {:order/customer-note :gin-trgm-ops} :unique? false :where nil}]
    :uniques   []
+   :checks    []
    :references []
    :triggers  []
    :gates     nil
@@ -99,12 +101,18 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
                [:partner-payout/amount :decimal]]
    :indexes   []
    :uniques   []
+   :checks    []
    :references []
    :triggers  []
    :gates     nil
    :on-change nil})
 
-(cellar/migrate! pool [shops orders partner-payouts]
+;; beside the tables, every key written out: the extensions, and the .sql files of the
+;; functions (one CREATE OR REPLACE FUNCTION each) and the views (one CREATE VIEW each, in order)
+(cellar/migrate! pool {:tables     [shops orders partner-payouts]
+                       :extensions ["pg_trgm"]                          ; the gin index's gin_trgm_ops
+                       :functions  ["app/db/next_order_number.sql"]
+                       :views      ["app/db/shop_totals.sql"]}
                  [{:id "2026-10-23-rename-order-note" :rename-column [:orders :order/note :order/customer-note]}]
                  {:instant-part {:statement-timeout-ms 30000 :lock-timeout-ms 5000}   ; an ALTER waits 5 s for its lock, then fails
                   :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}   ; an index build takes what it takes
@@ -123,13 +131,32 @@ An index is a map with every key written out
 and its nulls (`[:order/created-at :descending :nulls-first]`), or
 `[:order/note :unordered]` for a `:gin`, `:gist`, `:hash` or `:brin`
 index; `:method`; `:ops`, the operator classes that aren't the type's own
-(`{:order/customer-note :gin-trgm-ops}`, pg_trgm's: the extension must be
-there), `{}` for none; `:unique?`; and `:where`, nil for every row. A
+(`{:order/customer-note :gin-trgm-ops}`, pg_trgm's, in `:extensions`), `{}` for none; `:unique?`; and `:where`, nil for every row. A
 table map's `:uniques` are unique keys over several plain columns
 (`[[:conversation/kind :conversation/subject-id]]`, `[]` for none; one
 column's is its `{:unique? true}`); one with a condition or an expression
 is an index with `:unique? true`. An index on a table with rows is built
 and dropped `CONCURRENTLY`, in the slow part; one no map names is dropped.
+
+A table map's `:checks` are SQL conditions every row holds
+(`["jsonb_typeof(order__photos) = 'array'"]`, `[]` for none), each named by
+a hash of its condition; added to a table with rows `NOT VALID`, then
+proven in the slow part. Beside the tables, `migrate!` (and
+`make-plan-from-tables`, `does-database-match-tables?`) takes the
+database's extensions and the `.sql` files of its functions and views,
+every key written out, `[]` for none
+([why](decisions/2026-10-23-checks-functions-views-and-extensions-are-declared-like-tables.md)).
+They are compared as Postgres prints them and made in the order
+extensions, functions, tables, views, all in the instant part: a function
+whose printed definition differs is replaced (`CREATE OR REPLACE`, its body
+unchecked, so it may read a column the same plan adds); a view that
+differs, or reads a column a pending change drops, is dropped before the
+changes and made again after the tables, with every view over it. A
+function or a view in the maps' folders that no file makes is dropped; an
+extension no list names is a stop (its types may hold data), plpgsql
+aside. A view made again loses its grants until `grant-tables-to-role!`
+runs again. A fresh database gets them all, from the files, never from the
+changes' history.
 
 What a map names that Postgres already has under another name, the same
 shape, is adopted: renamed to the map's name (`ALTER … RENAME`, the catalog
@@ -165,7 +192,11 @@ what Postgres would
 | `[:json shape]` | `jsonb` |
 
 Any other type, or other properties, is refused (`:cellar/unknown-type`),
-and a type Postgres has otherwise is a stop.
+and a type Postgres has otherwise is a stop. A `:default` is
+`:random-uuid` (`gen_random_uuid()`), `:time-ordered-uuid` (Postgres 18's
+`uuidv7()`), `:now`, `:today` (`CURRENT_DATE`), a number, true/false, text,
+or `[]`/`{}` (empty JSON on a `:json` column; `[]` an empty array on a
+`:vector` one).
 
 A column is the exception: it says only the options it has, since an unsaid
 one is the safe answer

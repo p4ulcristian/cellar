@@ -48,6 +48,7 @@
    :columns   [[:thing/id :int {:primary-key? true}]]
    :indexes   []
    :uniques   []
+   :checks    []
    :references []
    :triggers  []
    :gates     nil
@@ -88,15 +89,15 @@
     (is (= :cellar/bad-options
            (:type (find-refusal #(cellar/run-slow-part! nil {:slow []} {})))))
     (is (= {:type :cellar/bad-options :errors {:slow-part ["missing required key"] :log ["missing required key"]}}
-           (find-refusal #(cellar/migrate! nil [a-table] [] {:instant-part {:statement-timeout-ms 1000 :lock-timeout-ms 1000}}))))))
+           (find-refusal #(cellar/migrate! nil (test-settings/declare-tables [a-table]) [] {:instant-part {:statement-timeout-ms 1000 :lock-timeout-ms 1000}}))))))
 
 (deftest a-table-map-writes-out-every-key-cellar-reads
   (testing "a table without :indexes, :uniques, :references, :triggers, :gates or :on-change is refused, each named"
     (is (= {:type :cellar/bad-tables
-            :errors [{:indexes ["missing required key"] :uniques ["missing required key"]
+            :errors {:tables [{:indexes ["missing required key"] :uniques ["missing required key"] :checks ["missing required key"]
                       :references ["missing required key"] :triggers ["missing required key"]
-                      :gates ["missing required key"] :on-change ["missing required key"]}]}
-           (find-refusal #(cellar/make-plan-from-tables nil [(select-keys a-table [:table :columns])] [])))))
+                      :gates ["missing required key"] :on-change ["missing required key"]}]}}
+           (find-refusal #(cellar/make-plan-from-tables nil (test-settings/declare-tables [(select-keys a-table [:table :columns])]) [])))))
   (testing "a column says only the options it has; an unsaid one is no or none"
     (is (= [:map [:thing/id :int] [:thing/note :string] [:thing/when {:optional true} [:maybe :time/instant]]]
            (cellar/turn-table-into-row-shape (assoc a-table :columns [[:thing/id :int {:primary-key? true}]
@@ -107,11 +108,11 @@
              (mapv #(select-keys % [:name :not-null? :default-sql]) (:columns things))))
       (is (= [[] {} {}] [(:primary-key things) (:uniques things) (:foreign-keys things)]))))
   (testing "an unknown option is refused, named"
-    (is (= {:type :cellar/bad-tables :errors [{:columns [[nil nil {:primary? ["disallowed key"]}]]}]}
-           (find-refusal #(cellar/make-plan-from-tables nil [(assoc a-table :columns [[:thing/id :int {:primary? true}]])] [])))))
+    (is (= {:type :cellar/bad-tables :errors {:tables [{:columns [[nil nil {:primary? ["disallowed key"]}]]}]}}
+           (find-refusal #(cellar/make-plan-from-tables nil (test-settings/declare-tables [(assoc a-table :columns [[:thing/id :int {:primary? true}]])]) [])))))
   (testing "a column is [key type] or [key type options]"
-    (is (= {:type :cellar/bad-tables :errors [{:columns [["a column is [key type] or [key type options]"]]}]}
-           (find-refusal #(cellar/make-plan-from-tables nil [(assoc a-table :columns [[:thing/id]])] [])))))
+    (is (= {:type :cellar/bad-tables :errors {:tables [{:columns [["a column is [key type] or [key type options]"]]}]}}
+           (find-refusal #(cellar/make-plan-from-tables nil (test-settings/declare-tables [(assoc a-table :columns [[:thing/id]])]) [])))))
   (testing "gates write out all four operations"
     (is (= :cellar/bad-tables
            (:type (find-refusal #(cellar/turn-table-into-row-shape (assoc a-table :gates {:read "true"})))))))

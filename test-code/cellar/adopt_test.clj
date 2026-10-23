@@ -24,10 +24,10 @@
       (finally (cellar/stop-pool! pool)))))
 
 (defn- plan-of [pool tables changes]
-  (select-keys (cellar/make-plan-from-tables pool tables changes) [:instant :slow :stops :changes-to-mark]))
+  (select-keys (cellar/make-plan-from-tables pool (test-settings/declare-tables tables) changes) [:instant :slow :stops :changes-to-mark]))
 
 (defn- migrate-and-wait! [pool tables changes]
-  @(:slow-part (cellar/migrate! pool tables changes test-settings/migrate-options)))
+  @(:slow-part (cellar/migrate! pool (test-settings/declare-tables tables) changes test-settings/migrate-options)))
 
 (defn find-oids
   "Each named constraint's and index's oid: the same oid after a migrate
@@ -44,6 +44,7 @@
    :columns    [[:shop/id :uuid {:primary-key? true :default :random-uuid}]]
    :indexes    []
    :uniques    []
+   :checks     []
    :references []
    :triggers   []
    :gates      nil
@@ -57,6 +58,7 @@
                 [:order/total   :decimal {:default 0}]]
    :indexes    [{:columns [[:order/shop-id :ascending :nulls-last]] :method :btree :ops {} :unique? false :where nil}]
    :uniques    []
+   :checks     []
    :references []
    :triggers   []
    :gates      nil
@@ -108,8 +110,8 @@
             (is (some #(= "ALTER TABLE orders ADD CONSTRAINT orders_order__status_enum CHECK (order__status IN ('draft', 'done')) NOT VALID" %)
                       (map :sql instant)))
             (is (= ["ALTER TABLE orders VALIDATE CONSTRAINT orders_order__status_enum"] (map :sql slow)))
-            (is (not-any? #(str/includes? % "orders_state_check") (map :sql instant))
-                "one cellar didn't make, under a name cellar doesn't give, is left alone")))))))
+            (is (= "ALTER TABLE orders DROP CONSTRAINT orders_state_check" (last (map :sql instant)))
+                "and the one no map names is dropped")))))))
 
 (deftest a-default-is-compared-as-postgres-prints-it
   (if-not port

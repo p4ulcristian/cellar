@@ -76,5 +76,10 @@
   [table-name body]
   (make-identifier (find-table-part table-name) "trigger" (format "%08x" (bit-and (hash body) 0xffffffff))))
 (defn make-enum-check-name [table-name column-name] (make-identifier table-name column-name "enum"))
+(defn make-check-name
+  "A table's check: its table, then a hash of its condition, so a changed
+   condition is another check."
+  [table-name condition]
+  (make-identifier table-name "check" (format "%08x" (bit-and (hash condition) 0xffffffff))))
 (defn make-not-null-check-name [table-name column-name] (make-identifier table-name column-name "not_null"))
 (defn make-index-name [table-name column-names] (apply make-identifier table-name (concat column-names ["idx"])))

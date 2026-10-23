@@ -17,11 +17,15 @@
      -- read back: pg_get_expr, pg_get_indexdef
      ROLLBACK;
 
-   It never touches a real table and keeps nothing. Made from the map, not
+   It never touches a real table, function or view, and keeps nothing. Made from the map, not
    copied from the real table (LIKE), so a column a pending change renames
    already has its new name. The role planning needs the TEMP right, and
    the transaction can't be read-only. A piece Postgres refuses is a stop,
-   with Postgres's words."
+   with Postgres's words.
+
+   The declared functions and views are made there too, under temporary
+   names, and read back; the declared extensions missing are made first,
+   so a piece that needs them prints."
   (:require
    [clojure.string :as str]
    [cellar.queries.postgres :as sql]
@@ -80,35 +84,99 @@
    (for [[n {:keys [unique? sql-body]}] indexes]
      [(str "CREATE " (when unique? "UNIQUE ") "INDEX " n " ON " probe-name " " sql-body) (str "index " n)])))
 
-(defn print-tables
+(def ^:private find-function-printed
+  (sql/make-query-from-sql-file "cellar/tables/find_function_printed.sql"))
+
+(def ^:private find-view-printed
+  (sql/make-query-from-sql-file "cellar/tables/find_view_printed.sql"))
+
+(defn- print-functions
+  "Each declared function made under a temporary name
+   (pg_temp.cellar_probe_function_<n>), as anyone with the TEMP right may,
+   and read back: {file {:identity [folder name arguments] :definition}},
+   its definition without its name (catalog/leave-out-function-name). A file
+   Postgres refuses is a stop."
+  [on functions]
+  (reduce (fn [result [i {:keys [file folder name header rest]}]]
+            (let [probe-name (str "cellar_probe_function_" i)
+                  refusal    (try-in-savepoint on (str header "pg_temp." probe-name rest))
+                  printed    (when-not refusal (sql/find-rows on find-function-printed {:name probe-name}))]
+              (cond
+                refusal
+                (update result :stops conj (str file " can't be made: " refusal))
+                (not= 1 (count printed))
+                (update result :stops conj (str file " makes " (count printed) " functions, not one"))
+                :else
+                (assoc-in result [:printed file] {:identity   [folder name (:arguments (first printed))]
+                                                  :definition (catalog/leave-out-function-name (:definition (first printed)))}))))
+          {:printed {} :stops []}
+          (map-indexed vector functions)))
+
+(defn- print-views
+  "Each view made under a temporary name, and read back: {view-name
+   {:definition :options}}, or :unknown when Postgres refuses it here (it
+   reads a column or a view this plan makes first): then it is made
+   again, after the tables, as one that changed."
+  [on views]
+  (into {}
+        (map-indexed
+         (fn [i {:keys [view-name header rest]}]
+           (let [probe-name (str "pg_temp.cellar_probe_view_" i)
+                 refusal    (try-in-savepoint on (str header probe-name rest))]
+             [view-name (if refusal
+                          :unknown
+                          (select-keys (sql/find-one-row on find-view-printed {:name probe-name}) [:definition :options]))])))
+        views))
+
+(defn- print-tables
   "How Postgres prints the pieces of these tables (desired.clj's form, by
    table name): {:printed {table-name {:defaults {column text} :checks
    {name condition} :indexes {name body}}} :stops [message]}."
-  [pool-or-transaction desired-tables]
-  (if (empty? desired-tables)
-    {:printed {} :stops []}
+  [on desired-tables]
+  (let [probes (map-indexed (fn [i [table-name table]] [(str "cellar_probe_" i) table-name table]) desired-tables)
+        stops  (vec (for [[probe-name table-name table] probes
+                          :let [refusal (try-in-savepoint
+                                         on (str "CREATE TEMP TABLE " probe-name " ("
+                                                 (str/join ", " (map write-probe-column (:columns table))) ")"))]
+                          message (if refusal
+                                    [(str table-name "'s columns and defaults can't be made: " refusal)]
+                                    (for [[piece-sql what] (make-pieces probe-name table)
+                                          :let [refusal (try-in-savepoint on piece-sql)]
+                                          :when refusal]
+                                      (str table-name "'s " what " can't be made: " refusal)))]
+                      message))
+        folder (when (seq probes) (:folder (sql/find-one-row on find-temporary-folder {})))
+        read   (if folder (catalog/read-catalog on [folder]) {})]
+    {:printed (into {}
+                    (for [[probe-name table-name] probes
+                          :let [probe (get read (str folder "." probe-name))]
+                          :when probe]
+                      [table-name {:defaults (into {} (map (juxt :name :default)) (:columns probe))
+                                   :checks   (update-vals (:checks probe) :condition)
+                                   :indexes  (update-vals (:indexes probe) :body)}]))
+     :stops   stops}))
+
+(defn print-declared
+  "How Postgres prints what the maps and the declared files make, in one
+   transaction rolled back: the extensions missing made first (a refusal
+   is a stop), the declared functions (print-functions), the
+   tables' pieces on empty temporary tables (print-tables), and the views
+   under temporary names (print-views). Function bodies aren't checked
+   (check_function_bodies off), as when the plan makes them. Returns
+   {:printed {:tables … :functions … :views …} :stops [message]}."
+  [pool-or-transaction {:keys [tables extensions functions views]}]
+  (if (and (empty? tables) (empty? extensions) (empty? functions) (empty? views))
+    {:printed {:tables {} :functions {} :views {}} :stops []}
     (call-rolled-back
      pool-or-transaction
      (fn [on]
-       (let [probes (map-indexed (fn [i [table-name table]] [(str "cellar_probe_" i) table-name table]) desired-tables)
-             stops  (vec (for [[probe-name table-name table] probes
-                               :let [refusal (try-in-savepoint
-                                              on (str "CREATE TEMP TABLE " probe-name " ("
-                                                      (str/join ", " (map write-probe-column (:columns table))) ")"))]
-                               message (if refusal
-                                         [(str table-name "'s columns and defaults can't be made: " refusal)]
-                                         (for [[piece-sql what] (make-pieces probe-name table)
-                                               :let [refusal (try-in-savepoint on piece-sql)]
-                                               :when refusal]
-                                           (str table-name "'s " what " can't be made: " refusal)))]
-                           message))
-             folder (:folder (sql/find-one-row on find-temporary-folder {}))
-             read   (if folder (catalog/read-catalog on [folder]) {})]
-         {:printed (into {}
-                         (for [[probe-name table-name] probes
-                               :let [probe (get read (str folder "." probe-name))]
-                               :when probe]
-                           [table-name {:defaults (into {} (map (juxt :name :default)) (:columns probe))
-                                        :checks   (update-vals (:checks probe) :condition)
-                                        :indexes  (update-vals (:indexes probe) :body)}]))
-          :stops   stops})))))
+       (run-sql! on "SET LOCAL check_function_bodies = off")
+       (let [extension-stops (vec (for [extension extensions
+                                        :let [refusal (try-in-savepoint on (str "CREATE EXTENSION IF NOT EXISTS \"" extension "\""))]
+                                        :when refusal]
+                                    (str "extension " extension " can't be made: " refusal)))
+             functions       (print-functions on functions)
+             tables          (print-tables on tables)
+             views           (print-views on views)]
+         {:printed {:tables (:printed tables) :functions (:printed functions) :views views}
+          :stops   (vec (concat extension-stops (:stops functions) (:stops tables)))})))))

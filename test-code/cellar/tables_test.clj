@@ -16,6 +16,7 @@
                [:shop/name :string]]
    :indexes   []
    :uniques   []
+   :checks    []
    :references []
    :triggers  []
    :gates     nil
@@ -32,6 +33,7 @@
                [:order/created-at :time/instant {:default :now}]]
    :indexes   [{:columns [[:order/shop-id :ascending :nulls-last] [:order/created-at :ascending :nulls-last]] :method :btree :ops {} :unique? false :where nil}]
    :uniques   []
+   :checks    []
    :references []
    :triggers  []
    :gates     nil
@@ -54,12 +56,12 @@
       (finally (sql/stop-pool! pool)))))
 
 (defn- migrate-and-wait! [pool tables changes]
-  (let [plan (schema/migrate! pool tables changes test-settings/migrate-options)]
+  (let [plan (schema/migrate! pool (test-settings/declare-tables tables) changes test-settings/migrate-options)]
     @(:slow-part plan)
     plan))
 
 (defn- plan-of [pool tables changes]
-  (select-keys (schema/make-plan-from-tables pool tables changes) [:instant :slow :stops :changes-to-mark]))
+  (select-keys (schema/make-plan-from-tables pool (test-settings/declare-tables tables) changes) [:instant :slow :stops :changes-to-mark]))
 
 (def ^:private nothing-to-do {:instant [] :slow [] :stops [] :changes-to-mark []})
 
@@ -69,6 +71,7 @@
                [:invoice/number :string {:unique? true}]]
    :indexes   []
    :uniques   []
+   :checks    []
    :references []
    :triggers  []
    :gates     nil
@@ -103,7 +106,7 @@
         (is (schema/run-in-transaction! pool {:read-only? false}
               (fn [transaction]
                 (run-sql! transaction "SET LOCAL ROLE cellar_app")
-                (schema/does-database-match-tables? transaction [shops orders] [{:id "c1" :rename-column [:orders :order/old :order/note]}])))
+                (schema/does-database-match-tables? transaction (test-settings/declare-tables [shops orders]) [{:id "c1" :rename-column [:orders :order/old :order/note]}])))
             "as the app's role, which owns nothing: the changes done are read, the database matches")))))
 
 (deftest the-row-shape-comes-from-the-map
@@ -119,7 +122,7 @@
         (testing "a fresh database gets the tables, and then nothing differs"
           (migrate-and-wait! pool [shops orders] [{:id "c1" :rename-column [:orders :order/old :order/note]}])
           (is (= nothing-to-do (plan-of pool [shops orders] [{:id "c1" :rename-column [:orders :order/old :order/note]}])))
-          (is (schema/does-database-match-tables? pool [shops orders] [])))
+          (is (schema/does-database-match-tables? pool (test-settings/declare-tables [shops orders]) [])))
 
         (run-sql! pool "INSERT INTO shops (shop__name) VALUES ('Hotcoats')")
         (run-sql! pool "INSERT INTO orders (order__shop_id) SELECT shop__id FROM shops")

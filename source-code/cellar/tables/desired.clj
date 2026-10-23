@@ -9,6 +9,7 @@
                   [:order/note    :string {:optional? true}]]
       :indexes   [{:columns [[:order/shop-id :ascending :nulls-last]] :method :btree :ops {} :unique? false :where nil}]
       :uniques   []
+      :checks    []
       :references []
       :triggers  []
       :gates     nil
@@ -20,7 +21,9 @@
    comparing. The maps are checked by cellar.settings/tables-shape before
    they come here."
   (:require
+   [clojure.java.io :as io]
    [clojure.string :as str]
+   [cellar.queries.params :as params]
    [cellar.tables.gates :as gates]
    [cellar.tables.names :as names]
    [cellar.tables.triggers :as triggers]
@@ -174,14 +177,15 @@
     (throw (ex-info (str table-name "'s unique key " (pr-str unique) " names " (pr-str (vec unknown)) ", no column of it")
                     {:type :cellar/bad-unique :unique unique}))))
 
-(defn- turn-table-map-into-desired [table-maps tables-by-primary-key {:keys [table columns indexes uniques gates on-change triggers]}]
+(defn- turn-table-map-into-desired [table-maps tables-by-primary-key {:keys [table columns indexes uniques checks gates on-change triggers]}]
   (let [table-name (names/turn-table-key-into-table-name table)
         column     (fn [[k type {:keys [optional? default]}]]
-                     {:name              (names/turn-key-into-column-name k)
-                      :type              (types/turn-type-into-postgres-type type)
-                      :not-null?         (not optional?)
-                      :default-sql       (some-> default types/turn-default-into-sql)
-                      :volatile-default? (types/is-default-volatile? default)})
+                     (let [postgres-type (types/turn-type-into-postgres-type type)]
+                       {:name              (names/turn-key-into-column-name k)
+                        :type              postgres-type
+                        :not-null?         (not optional?)
+                        :default-sql       (when (some? default) (types/turn-default-into-sql default postgres-type))
+                        :volatile-default? (types/is-default-volatile? default)}))
         table-map  (first (filter #(= table (:table %)) table-maps))]
     (check-triggers table-name table-map)
     (check-uniques table-name table-map)
@@ -200,12 +204,15 @@
                                  :let [column-names (mapv names/turn-key-into-column-name unique)]]
                              [(names/make-unique-name table-name column-names) {:columns column-names}])))
       :checks       (into {}
-                          (for [[k type] columns
-                                :let [values (types/find-enum-values type)]
-                                :when values
-                                :let [column-name (names/turn-key-into-column-name k)]]
-                            [(names/make-enum-check-name table-name column-name)
-                             {:sql (str column-name " IN (" (str/join ", " (map types/quote-text values)) ")")}]))
+                          (concat
+                           (for [[k type] columns
+                                 :let [values (types/find-enum-values type)]
+                                 :when values
+                                 :let [column-name (names/turn-key-into-column-name k)]]
+                             [(names/make-enum-check-name table-name column-name)
+                              {:sql (str column-name " IN (" (str/join ", " (map types/quote-text values)) ")")}])
+                           (for [condition checks]
+                             [(names/make-check-name table-name condition) {:sql condition}])))
       :gated?       (some? gates)
       :policies     (if gates (gates/turn-gates-into-policies (names/turn-table-key-into-table-name table) gates) {})
       :triggers     (merge (if on-change (triggers/turn-on-change-into-triggers table-name on-change) {})
@@ -245,3 +252,59 @@
           (if optional?
             [k {:optional true} [:maybe type]]
             [k type]))))
+
+;; -----------------------------------------------------------------------------
+;; Extensions, functions and views
+
+(def ^:private leading-comments
+  "(?:\\s+|--[^\\n]*(?:\\n|$)|/\\*.*?\\*/)*")
+
+(def ^:private function-header
+  (re-pattern (str "(?is)^(" leading-comments "CREATE\\s+OR\\s+REPLACE\\s+FUNCTION\\s+)"
+                   "(?:([a-z_][a-z0-9_]*)\\.)?([a-z_][a-z0-9_]*)(?=\\s*\\()")))
+
+(def ^:private view-header
+  (re-pattern (str "(?is)^(" leading-comments "CREATE\\s+(?:OR\\s+REPLACE\\s+)?VIEW\\s+)"
+                   "(?:([a-z_][a-z0-9_]*)\\.)?([a-z_][a-z0-9_]*)(?=[\\s(])")))
+
+(defn- read-sql-file [path]
+  (let [url (or (io/resource path)
+                (throw (ex-info (str "No SQL file " path) {:type :cellar/missing-file :path path})))]
+    (slurp url)))
+
+(defn- throw-bad-file [path message]
+  (throw (ex-info (str path ": " message) {:type :cellar/bad-file :path path})))
+
+(defn- check-no-params [path sql-text]
+  (when (seq (:param-names (params/turn-sql-text-into-statement sql-text)))
+    (throw-bad-file path "has params; a function's or a view's SQL runs without any")))
+
+(defn turn-declared-into-desired
+  "The extensions, functions and views the app declares, their files read:
+   {:extensions [name] :functions [{:file :folder :name :sql :header
+   :rest}] :views [{:file :view-name :sql :header :rest}]}, :header and
+   :rest what comes before and after the name, so the probe can make it
+   under another. A file that isn't one
+   CREATE OR REPLACE FUNCTION (or CREATE VIEW) with a plain name throws
+   :cellar/bad-file."
+  [{:keys [extensions functions views]}]
+  {:extensions (vec extensions)
+   :functions  (vec (for [path functions
+                          :let [sql-text (read-sql-file path)
+                                [header-and-name header folder function-name]
+                                (or (re-find function-header sql-text)
+                                    (throw-bad-file path "a function's file starts with CREATE OR REPLACE FUNCTION and a plain name"))]]
+                      (do (check-no-params path sql-text)
+                          {:file   path :folder (or folder "public") :name function-name :sql sql-text
+                           :header header :rest (subs sql-text (count header-and-name))})))
+   :views      (vec (for [path views
+                          :let [sql-text (read-sql-file path)
+                                [header-and-name header folder view-name]
+                                (or (re-find view-header sql-text)
+                                    (throw-bad-file path "a view's file starts with CREATE VIEW and a plain name"))]]
+                      (do (check-no-params path sql-text)
+                          {:file      path
+                           :view-name (if (and folder (not= "public" folder)) (str folder "." view-name) view-name)
+                           :header    header
+                           :rest      (subs sql-text (count header-and-name))
+                           :sql       sql-text})))})

@@ -22,11 +22,16 @@
       (f pool)
       (finally (cellar/stop-pool! pool)))))
 
+(defn- declare-with-trigrams
+  "These tables, and pg_trgm, whose operator class a gin index uses."
+  [tables]
+  {:tables tables :extensions ["pg_trgm"] :functions [] :views []})
+
 (defn- plan-of [pool tables]
-  (select-keys (cellar/make-plan-from-tables pool tables []) [:instant :slow :stops :changes-to-mark]))
+  (select-keys (cellar/make-plan-from-tables pool (declare-with-trigrams tables) []) [:instant :slow :stops :changes-to-mark]))
 
 (defn- migrate-and-wait! [pool tables]
-  @(:slow-part (cellar/migrate! pool tables [] test-settings/migrate-options)))
+  @(:slow-part (cellar/migrate! pool (declare-with-trigrams tables) [] test-settings/migrate-options)))
 
 (def ^:private nothing-to-do {:instant [] :slow [] :stops [] :changes-to-mark []})
 
@@ -47,6 +52,7 @@
                 {:columns [[:customer/workspace-id :ascending :nulls-last] ["lower(customer__email)" :ascending :nulls-last]]
                  :method :btree :ops {} :unique? true :where "customer__email IS NOT NULL AND customer__email <> ''"}]
    :uniques    [[:customer/workspace-id :customer/kind]]
+   :checks     []
    :references []
    :triggers   []
    :gates      nil
@@ -67,7 +73,7 @@
        " VALUES (gen_random_uuid(), 'a@b.c', 'pending', 'shop', now())"))
 
 (deftest an-index-map-says-what-postgres-can-make
-  (let [refusal (fn [index] (:type (ex-data (try (cellar/make-plan-from-tables nil [(assoc customers :indexes [index])] [])
+  (let [refusal (fn [index] (:type (ex-data (try (cellar/make-plan-from-tables nil (declare-with-trigrams [(assoc customers :indexes [index])]) [])
                                                  (catch Exception e e)))))]
     (is (= :cellar/bad-index (refusal {:columns [[:customer/email :unordered]] :method :btree :ops {} :unique? false :where nil}))
         "a btree index's columns say their order")

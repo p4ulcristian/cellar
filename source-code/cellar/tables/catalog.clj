@@ -35,6 +35,11 @@
 (def ^:private find-row-security (make-query "find_row_security.sql"))
 (def ^:private find-policies    (make-query "find_policies.sql"))
 (def ^:private find-triggers    (make-query "find_triggers.sql"))
+(def ^:private find-extensions  (make-query "find_extensions.sql"))
+(def ^:private find-functions   (make-query "find_functions.sql"))
+(def ^:private find-views       (make-query "find_views.sql"))
+(def ^:private find-view-reads  (make-query "find_view_reads.sql"))
+(def ^:private find-folders     (make-query "find_folders.sql"))
 
 (defn- add-gates [tables params pool]
   (as-> tables tables
@@ -137,3 +142,43 @@
                 (sql/find-rows pool find-indexes params))
         (add-gates params pool)
         (add-triggers params pool))))
+
+(def ^:private function-name-in-definition
+  ;; the name pg_get_functiondef prints after CREATE OR REPLACE FUNCTION
+  #"^CREATE OR REPLACE FUNCTION [^(]+\(")
+
+(defn leave-out-function-name
+  "A function's definition as pg_get_functiondef prints it, its folder and
+   name left out, so a function made under another name compares."
+  [definition]
+  (str/replace-first definition function-name-in-definition "CREATE OR REPLACE FUNCTION ("))
+
+(defn read-objects
+  "The folders and extensions in the database, and the functions and views in these
+   folders (but an extension's), as Postgres has them:
+
+     {:folders    #{\"public\" \"billing\" …}
+      :extensions #{\"plpgsql\" \"pg_trgm\"}
+      :functions  {[\"public\" \"next_job_number\" \"workspace uuid\"] \"CREATE OR REPLACE FUNCTION (workspace uuid) …\"}
+      :views      {\"report_totals\" {:definition \" SELECT …\" :options \"security_invoker=true\"
+                                   :reads #{[\"orders\" \"order__total\"]} :views-read #{}}}}
+
+   A function is its folder, name and arguments, with pg_get_functiondef's
+   text, its name left out (leave-out-function-name); a view its pg_get_viewdef's text and options, and the columns and
+   views it reads."
+  [pool folders]
+  (let [params {:folders (str/join "," folders)}
+        reads  (group-by :view-name (sql/find-rows pool find-view-reads params))]
+    {:folders    (set (map :folder (sql/find-rows pool find-folders {})))
+     :extensions (set (map :extension-name (sql/find-rows pool find-extensions {})))
+     :functions  (into {} (for [{:keys [folder function-name arguments definition]} (sql/find-rows pool find-functions params)]
+                            [[folder function-name arguments] (leave-out-function-name definition)]))
+     :views      (into {} (for [{:keys [view-name definition options]} (sql/find-rows pool find-views params)
+                                :let [read (get reads view-name)]]
+                            [view-name {:definition definition :options options
+                                        :reads      (set (for [{:keys [read-name read-is-view column-name]} read
+                                                               :when (not read-is-view)]
+                                                           [read-name column-name]))
+                                        :views-read (set (for [{:keys [read-name read-is-view]} read
+                                                               :when read-is-view]
+                                                           read-name))}]))}))

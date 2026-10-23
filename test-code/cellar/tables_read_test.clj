@@ -103,10 +103,16 @@
    :columns   [[:told-thing/id :int {:primary-key? true}]]
    :indexes   []
    :uniques   []
+   :checks    []
    :references []
    :triggers  []
    :gates     nil
    :on-change {:function "public.tell_test" :arguments ["told_thing__id"]}})
+
+(defn- declare-with-tell
+  "These tables, and the function their change triggers call (cellar/tell_test.sql)."
+  [tables]
+  {:tables tables :extensions [] :functions ["cellar/tell_test.sql"] :views []})
 
 (deftest change-triggers
   (if-not port
@@ -114,23 +120,22 @@
     (let [pool (start-pool!)]
       (try
         (run-sql! pool "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; DROP SCHEMA IF EXISTS cellar CASCADE")
-        (run-sql! pool "CREATE FUNCTION public.tell_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$")
-        (let [plan (database/make-plan-from-tables pool [told-things] [])]
+        (let [plan (database/make-plan-from-tables pool (declare-with-tell [told-things]) [])]
           (is (= 3 (count (filter #(str/starts-with? (:sql %) "CREATE TRIGGER") (:instant plan))))
               "one trigger per insert, update and delete"))
         (let [lines (atom [])]
-          @(:slow-part (database/migrate! pool [told-things] [] (assoc test-settings/migrate-options :log (test-settings/make-log lines))))
+          @(:slow-part (database/migrate! pool (declare-with-tell [told-things]) [] (assoc test-settings/migrate-options :log (test-settings/make-log lines))))
           (is (= [[:info :cellar/planned :instant]]
                  (distinct (map (fn [[level event data]] [level event (:cellar/part data)]) @lines))))
           (is (some #(str/starts-with? (:cellar/sql (nth % 2)) "CREATE TRIGGER") @lines)
               "each planned statement is written to the log, with its part and why"))
-        (is (database/does-database-match-tables? pool [told-things] []))
+        (is (database/does-database-match-tables? pool (declare-with-tell [told-things]) []))
         (testing "a changed :on-change is new triggers in place of the old"
           (let [changed (assoc-in told-things [:on-change :arguments] ["told_thing__id" "x"])
-                plan    (database/make-plan-from-tables pool [changed] [])]
+                plan    (database/make-plan-from-tables pool (declare-with-tell [changed]) [])]
             (is (= 3 (count (filter #(str/starts-with? (:sql %) "DROP TRIGGER") (:instant plan)))))
             (is (= 3 (count (filter #(str/starts-with? (:sql %) "CREATE TRIGGER") (:instant plan)))))))
         (testing "no :on-change: the triggers go"
           (is (= 3 (count (filter #(str/starts-with? (:sql %) "DROP TRIGGER")
-                                  (:instant (database/make-plan-from-tables pool [(assoc told-things :on-change nil)] [])))))))
+                                  (:instant (database/make-plan-from-tables pool (declare-with-tell [(assoc told-things :on-change nil)]) [])))))))
         (finally (database/stop-pool! pool))))))

@@ -523,9 +523,9 @@
                     :else state)))
               state (:checks desired))
       (reduce (fn [state [n _]]
-                (if (or (contains? (:checks desired) n) (not (str/ends-with? n "_enum")))
+                (if (contains? (:checks desired) n)
                   state
-                  (add-instant state (str "ALTER TABLE " table-name " DROP CONSTRAINT " n) (str "enum " n " is in no map"))))
+                  (add-instant state (str "ALTER TABLE " table-name " DROP CONSTRAINT " n) (str "check " n " is in no map"))))
               state (:checks existing))
       ;; indexes: compared as Postgres prints them; built and dropped CONCURRENTLY, in the slow part
       (reduce (fn [state [n index]]
@@ -578,6 +578,100 @@
           state
           references))
 
+;; -----------------------------------------------------------------------------
+;; Extensions, functions and views
+
+(defn- quote-name
+  "A folder.name, or a name, each part in double quotes."
+  [qualified]
+  (str/join "." (map #(str "\"" (str/replace % "\"" "\"\"") "\"") (str/split qualified #"\."))))
+
+(defn- find-views-to-drop
+  "The views Postgres has that go before the changes and tables: in no
+   file; declared but printed otherwise (or not printable before the plan
+   runs); reading a column or a table a pending change drops; and every
+   view that reads one of those."
+  [existing-views declared-views printed-views pending]
+  (let [declared-names  (set (map :view-name declared-views))
+        dropped-tables  (set (for [{:keys [drop-table]} pending :when drop-table]
+                               (names/turn-table-key-into-table-name drop-table)))
+        dropped-columns (set (for [{[table-key column-key] :drop-column} pending :when table-key]
+                               [(names/turn-table-key-into-table-name table-key) (names/turn-key-into-column-name column-key)]))
+        changed?        (fn [view-name]
+                          (not= (get printed-views view-name)
+                                (select-keys (get existing-views view-name) [:definition :options])))
+        first-drops     (set (for [[view-name {:keys [reads]}] existing-views
+                                   :when (or (not (contains? declared-names view-name))
+                                             (changed? view-name)
+                                             (some (fn [[table column]] (or (dropped-tables table) (dropped-columns [table column])))
+                                                   reads))]
+                               view-name))]
+    (loop [drops first-drops]
+      (let [more (into drops (for [[view-name {:keys [views-read]}] existing-views
+                                   :when (some drops views-read)]
+                               view-name))]
+        (if (= more drops) drops (recur more))))))
+
+(defn- plan-objects-before
+  "Before the changes and tables, in the instant part: the views that go
+   (one DROP VIEW, which Postgres orders), the folders and extensions
+   missing, and the declared functions Postgres hasn't, or has printed
+   otherwise, made (CREATE OR REPLACE, bodies unchecked, so a function may
+   read a column this plan adds). An extension in no list is a stop: its
+   types may hold data. The views to make after the tables are kept for
+   plan-objects-after."
+  [state {:keys [objects declared printed pending]}]
+  (let [{:keys [extensions functions views]} declared
+        drops   (find-views-to-drop (:views objects) views (:views printed) pending)
+        to-make (filterv #(or (not (contains? (:views objects) (:view-name %))) (contains? drops (:view-name %))) views)
+        folders (distinct (remove (:folders objects)
+                                  (concat (map :folder functions)
+                                          (map (comp names/find-folder-of-table :view-name) views))))
+        to-run  (filter (fn [{:keys [file]}]
+                          (let [{:keys [identity definition]} (get-in printed [:functions file])]
+                            (or (nil? identity) (not= definition (get-in objects [:functions identity])))))
+                        functions)]
+    (as-> state state
+      (if (seq drops)
+        (add-instant state (str "DROP VIEW IF EXISTS " (str/join ", " (map quote-name (sort drops))))
+                     "views in no file, changed, or over what changes: the declared ones are made again after the tables")
+        state)
+      (reduce #(add-instant %1 (str "CREATE SCHEMA IF NOT EXISTS " %2) (str "folder " %2 " for its functions and views")) state folders)
+      (reduce (fn [state extension]
+                (if (contains? (:extensions objects) extension)
+                  state
+                  (add-instant state (str "CREATE EXTENSION IF NOT EXISTS \"" extension "\"") (str "missing extension " extension))))
+              state extensions)
+      (reduce (fn [state extension]
+                (add-stop state (str "extension " extension " is in the database but in no list: add it to :extensions, "
+                                     "or drop it by hand (its types may hold data)")))
+              state
+              (sort (remove (into #{"plpgsql"} extensions) (:extensions objects))))
+      (if (seq to-run)
+        (add-instant state "SET LOCAL check_function_bodies = off" "functions are made before the tables and columns they read")
+        state)
+      (reduce (fn [state {:keys [file folder name sql]}]
+                (add-instant state sql (str "function " folder "." name " from " file)))
+              state to-run)
+      (assoc state :views-to-make to-make))))
+
+(defn- plan-objects-after
+  "After the tables, in the instant part: the functions Postgres has that
+   no file makes dropped (by folder, name and arguments), and the views to
+   make made, in their list's order."
+  [state {:keys [objects declared printed]}]
+  (let [identities (set (keep #(get-in printed [:functions (:file %) :identity]) (:functions declared)))]
+    (as-> state state
+      (reduce (fn [state [[folder function-name arguments :as identity] _]]
+                (if (contains? identities identity)
+                  state
+                  (add-instant state (str "DROP FUNCTION " (quote-name folder) "." (quote-name function-name) "(" arguments ")")
+                               (str "function " folder "." function-name "(" arguments ") is in no file"))))
+              state (sort-by key (:functions objects)))
+      (reduce (fn [state {:keys [view-name file sql]}]
+                (add-instant state sql (str "view " view-name " from " file)))
+              state (:views-to-make state)))))
+
 (defn list-folders-of-pending-changes
   "The folders of the tables pending changes drop or rename away: read
    with the maps' folders, so a table in a folder no map names any more
@@ -607,16 +701,22 @@
       (into {} (filter #(or (contains? catalog (key %)) (contains? renamed-into (key %)))) desired))))
 
 (defn make-plan
-  "The plan from what Postgres has (catalog), what the maps say (desired),
-   how Postgres prints the maps' pieces (printed, the probe's, for the
-   tables list-tables-to-print names), the change files and which have
-   run, and has-rows? (a table name -> whether it has rows, asked only when
-   it matters)."
-  [{:keys [catalog desired printed changes changes-done has-rows?]}]
+  "The plan from what Postgres has (catalog, its tables; objects, its
+   folders, extensions, functions and views), what the maps and files say
+   (desired, the tables; declared, the rest), how Postgres prints the
+   maps' and files' pieces (printed, the probe's: :tables for those
+   list-tables-to-print names, :functions, :views), the change files and
+   which have run, and has-rows? (a table name -> whether it has rows,
+   asked only when it matters). In the instant part: the views that go,
+   the extensions and functions, the references no map names, the
+   changes, the tables, the functions no file makes dropped, the views
+   made."
+  [{:keys [catalog objects desired declared printed changes changes-done has-rows?]}]
   (let [fresh?   (is-fresh? catalog desired changes-done)
         pending  (remove #(contains? changes-done (:id %)) changes)
-        start    {:catalog catalog :instant [] :slow [] :stops [] :waiting-references []
-                  :changes-to-mark (mapv :id pending)}
+        start    (plan-objects-before {:catalog catalog :instant [] :slow [] :stops [] :waiting-references []
+                                       :changes-to-mark (mapv :id pending)}
+                                      {:objects objects :declared declared :printed printed :pending (if fresh? [] pending)})
         state    (if fresh?
                    start
                    (reduce apply-change
@@ -624,7 +724,7 @@
                            pending))
         desired  (into {} (map (fn [[table-name table]]
                                  [table-name (if (contains? (:catalog state) table-name)
-                                               (add-printed table (get printed table-name))
+                                               (add-printed table (get-in printed [:tables table-name]))
                                                table)]))
                        desired)
         state    (reduce (fn [state table-name]
@@ -656,5 +756,6 @@
                                                   "add a change file, {:rename-table [:" table-name " …]} "
                                                   "or {:drop-table :" table-name " :why \"…\"}")))
                            state
-                           (remove #(contains? desired %) (keys catalog))))]
+                           (remove #(contains? desired %) (keys catalog)))
+                   (plan-objects-after state {:objects objects :declared declared :printed printed}))]
     (select-keys state [:instant :slow :stops :changes-to-mark])))

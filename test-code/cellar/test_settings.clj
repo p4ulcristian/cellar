@@ -82,3 +82,9 @@
   {:instant-part {:statement-timeout-ms 10000 :lock-timeout-ms 5000}
    :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}
    :log          log})
+
+(defn declare-tables
+  "What make-plan-from-tables and migrate! take: these tables, and no
+   extensions, functions or views."
+  [tables]
+  {:tables tables :extensions [] :functions [] :views []})

@@ -27,12 +27,13 @@
         :indexes   [{:columns [[:order/shop-id :ascending :nulls-last] [:order/created-at :descending :nulls-first]]
                      :method :btree :ops {} :unique? false :where nil}]
         :uniques   []
+        :checks    []
         :references []
         :triggers  []
         :gates     nil
         :on-change nil})
 
-     (database/migrate! pool [shops orders] changes
+     (database/migrate! pool {:tables [shops orders] :extensions [] :functions [] :views []} changes
                         {:instant-part {:statement-timeout-ms 30000 :lock-timeout-ms 5000}
                          :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}
                          :log          log})   ; the app's log function (logbook's)
@@ -48,8 +49,8 @@
    about (cellar.queries.pool-lines).
 
    A table map writes out every key cellar reads (:indexes, :uniques,
-   :references and :triggers [] for none, :gates and :on-change nil for
-   none); it is open, so another library's keys ride along. An index is a
+   :checks, :references and :triggers [] for none, :gates and :on-change
+   nil for none); it is open, so another library's keys ride along. An index is a
    map with every key written out: {:columns [[:order/shop-id :ascending
    :nulls-last] [\"lower(order__note)\" :descending :nulls-first]] :method
    :btree :ops {} :unique? false :where nil}; a :gin, :gist, :hash or :brin
@@ -71,13 +72,25 @@
    of one of those but an enum; [:json shape] (jsonb). It is NOT
    NULL unless {:optional? true}; {:unique? true} makes a unique key;
    {:primary-key? true} puts it in the primary key; :default is
-   :random-uuid, :now, a number, true/false or text; :references points at
+   :random-uuid, :time-ordered-uuid (uuidv7()), :now, :today
+   (CURRENT_DATE), a number, true/false, text, or [] or {} (empty JSON; []
+   an empty array on a :vector column); :references points at
    another table's one-column primary key, saying what it does:
    {:to :shop/id :on-delete :refuse :on-update :refuse :checked-at :statement},
    each action :cascade, :set-null (an :optional? column only), :refuse (NO
    ACTION) or :restrict, checked after each :statement or at :commit. A table key with a
    namespace is in that Postgres schema (folder): :billing/invoices is
    billing.invoices; one without is in public.
+
+   Beside the tables, the app declares its extensions, and the .sql files
+   of its functions (one CREATE OR REPLACE FUNCTION each) and views (one
+   CREATE VIEW each, in order), every key written out: {:tables [...]
+   :extensions [\"pg_trgm\"] :functions [\"app/db/next_job_number.sql\"]
+   :views [\"app/db/report_totals.sql\"]}. They are compared as Postgres
+   prints them and made extensions first, then functions, tables, views; a
+   function or view in the maps' folders that no file makes is dropped, an
+   extension no list names is a stop. A table's :checks are SQL
+   conditions, [\"jsonb_typeof(order__photos) = 'array'\"].
 
    Changes are data, for what a map can't say; each runs once, remembered in
    cellar.changes_done (cellar's own table, in its own folder), and a fresh
@@ -325,22 +338,41 @@
                                {})))
 
 (defn make-plan-from-tables
-  "What would make Postgres match the tables and changes, without changing
-   anything: {:instant [{:sql :why}] :slow [{:sql :why}] :stops [message]
-   :changes-to-mark [id]}. How Postgres prints the maps' checks, indexes
-   and defaults is asked of it in a transaction that is rolled back, on
-   empty temporary tables (cellar.tables.probe): the role needs the TEMP
-   right, and a transaction it is given can't be read-only."
-  [pool tables changes]
-  (settings/check-tables tables)
-  (let [desired      (desired/turn-table-maps-into-desired tables)
+  "What would make Postgres match what the app declares and the changes,
+   without changing anything: {:instant [{:sql :why}] :slow [{:sql :why}]
+   :stops [message] :changes-to-mark [id]}. The declared, every key
+   written out:
+
+     {:tables     [shops orders]                     ; the table maps
+      :extensions [\"pg_trgm\"]                       ; [] for none
+      :functions  [\"app/db/next_job_number.sql\"]    ; one CREATE OR REPLACE FUNCTION per file, [] for none
+      :views      [\"app/db/report_totals.sql\"]}     ; one CREATE VIEW per file, in order, [] for none
+
+   How Postgres prints the maps' checks, indexes and defaults, the files'
+   functions and views, is asked of it in a transaction that is rolled
+   back (cellar.tables.probe): the role needs the TEMP right, and a
+   transaction it is given can't be read-only."
+  [pool declared changes]
+  (settings/check-declared declared)
+  (let [desired      (desired/turn-table-maps-into-desired (:tables declared))
+        files        (desired/turn-declared-into-desired declared)
         changes-done (set (map :change-done/id (find-changes-done-if-any pool)))
-        folders      (into (set (map names/find-folder-of-table (keys desired)))
-                           (plan/list-folders-of-pending-changes changes changes-done))
+        folders      (-> (set (map names/find-folder-of-table (keys desired)))
+                         (into (map :folder (:functions files)))
+                         (into (map (comp names/find-folder-of-table :view-name) (:views files)))
+                         (into (plan/list-folders-of-pending-changes changes changes-done)))
         catalog      (catalog/read-catalog pool folders)
-        {:keys [printed stops]} (probe/print-tables pool (plan/list-tables-to-print catalog desired changes changes-done))]
+        objects      (catalog/read-objects pool folders)
+        {:keys [printed stops]} (probe/print-declared
+                                 pool
+                                 {:tables     (plan/list-tables-to-print catalog desired changes changes-done)
+                                  :extensions (remove (:extensions objects) (:extensions files))
+                                  :functions  (:functions files)
+                                  :views      (filter #(contains? (:views objects) (:view-name %)) (:views files))})]
     (update (plan/make-plan {:catalog      catalog
+                             :objects      objects
                              :desired      desired
+                             :declared     files
                              :printed      printed
                              :changes      changes
                              :changes-done changes-done
@@ -395,7 +427,9 @@
     (log :info :cellar/planned {:cellar/part part :cellar/why why :cellar/sql sql})))
 
 (defn migrate!
-  "Brings Postgres to the tables, for development and the deploy: plans,
+  "Brings Postgres to what the app declares (make-plan-from-tables: its
+   tables, extensions, functions and views), for development and the
+   deploy: plans,
    throws on a stop (nothing runs), runs the instant part now and the slow
    part on a background thread, each with its options, and writes each
    planned statement to the log, :info :cellar/planned {:cellar/part
@@ -408,19 +442,20 @@
 
    Returns the plan with :slow-part, a future of the slow part (deref it to
    wait)."
-  [pool tables changes options]
+  [pool declared changes options]
   (settings/check-migrate-options options)
-  (let [plan (make-plan-from-tables pool tables changes)]
+  (let [plan (make-plan-from-tables pool declared changes)]
     (run-instant-part! pool plan (:instant-part options))
     (log-plan (:log options) plan)
     (assoc plan :slow-part (future (run-slow-part! pool plan (:slow-part options))))))
 
 (defn does-database-match-tables?
-  "Whether Postgres has everything the tables and changes need to run: no
+  "Whether Postgres has everything what the app declares (as
+   make-plan-from-tables takes it) and the changes need to run: no
    instant part left, no stop, no change waiting. A slow part still to run
    is allowed."
-  [pool tables changes]
-  (let [{:keys [instant stops changes-to-mark]} (make-plan-from-tables pool tables changes)]
+  [pool declared changes]
+  (let [{:keys [instant stops changes-to-mark]} (make-plan-from-tables pool declared changes)]
     (and (empty? instant) (empty? stops) (empty? changes-to-mark))))
 
 (defn turn-table-into-row-shape
