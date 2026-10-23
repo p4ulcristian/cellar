@@ -7,7 +7,8 @@
                   [:order/shop-id :uuid   {:references {:to :shop/id :on-delete :refuse :on-update :refuse
                                                          :checked-at :statement}}]
                   [:order/note    :string {:optional? true}]]
-      :indexes   [[:order/shop-id]]
+      :indexes   [{:columns [[:order/shop-id :ascending :nulls-last]] :method :btree :ops {} :unique? false :where nil}]
+      :uniques   []
       :references []
       :triggers  []
       :gates     nil
@@ -115,7 +116,65 @@
       (throw (ex-info (str table-name "'s trigger " (pr-str trigger) " names " (pr-str (vec unknown)) ", no column of it")
                       {:type :cellar/bad-trigger :trigger trigger})))))
 
-(defn- turn-table-map-into-desired [table-maps tables-by-primary-key {:keys [table columns indexes gates on-change triggers]}]
+(defn- throw-bad-index [message index]
+  (throw (ex-info message {:type :cellar/bad-index :index index})))
+
+(defn- write-index-part [part]
+  (if (string? part) (str "(" part ")") (names/turn-key-into-column-name part)))
+
+(defn- is-plain-index?
+  "A btree index over plain columns, each ascending with nulls last, its
+   types' own operator classes, every row, not unique: named after its
+   columns alone, as cellar named every index before index maps."
+  [{:keys [columns method ops unique? where]}]
+  (and (= :btree method) (empty? ops) (nil? where) (not unique?)
+       (every? (fn [[part order nulls]] (and (keyword? part) (= :ascending order) (= :nulls-last nulls))) columns)))
+
+(defn- turn-index-into-desired
+  "[name {:columns :unique? :sql-body}] of an index map: :sql-body the SQL
+   after CREATE INDEX name ON table. A plain index is named after its
+   columns; any other after its columns and a hash of its SQL, so a
+   changed one is a new name. Throws when the index can't be made."
+  [table-name {own-columns :columns} {:keys [columns method ops unique? where] :as index}]
+  (let [parts      (map first columns)
+        has-column (set (map first own-columns))
+        ordered?   (= :btree method)]
+    (when-let [unknown (seq (remove has-column (filter keyword? (concat parts (keys ops)))))]
+      (throw-bad-index (str table-name "'s index " (pr-str index) " names " (pr-str (vec unknown)) ", no column of it") index))
+    (when-let [unknown (seq (remove (set parts) (keys ops)))]
+      (throw-bad-index (str table-name "'s index " (pr-str index) " has :ops for " (pr-str (vec unknown)) ", none of its :columns") index))
+    (when-not (every? #(= (if ordered? 3 2) (count %)) columns)
+      (throw-bad-index (str table-name "'s index " (pr-str index) ": a :btree index's columns say their order and nulls,"
+                            " [:column :ascending :nulls-last]; another method's are [:column :unordered]")
+                       index))
+    (when (and unique? (not ordered?))
+      (throw-bad-index (str table-name "'s index " (pr-str index) " is :unique?, which only a :btree index can be") index))
+    (let [sql-body     (str "USING " (name method) " ("
+                            (str/join ", " (for [[part order nulls] columns]
+                                             (str (write-index-part part)
+                                                  (when-let [op (get ops part)] (str " " (str/replace (name op) "-" "_")))
+                                                  (when ordered?
+                                                    (str (if (= :descending order) " DESC" " ASC")
+                                                         (if (= :nulls-first nulls) " NULLS FIRST" " NULLS LAST"))))))
+                            ")"
+                            (when where (str " WHERE " where)))
+          column-names (mapv names/turn-key-into-column-name (filter keyword? parts))]
+      [(if (is-plain-index? index)
+         (names/make-index-name table-name column-names)
+         (apply names/make-identifier table-name
+                (concat column-names [(format "%08x" (bit-and (hash [unique? sql-body]) 0xffffffff)) "idx"])))
+       {:columns column-names :unique? unique? :sql-body sql-body}])))
+
+(defn- check-uniques
+  "A table's :uniques name its columns; throws otherwise."
+  [table-name {:keys [columns uniques]}]
+  (doseq [unique uniques
+          :let [unknown (seq (remove (set (map first columns)) unique))]
+          :when unknown]
+    (throw (ex-info (str table-name "'s unique key " (pr-str unique) " names " (pr-str (vec unknown)) ", no column of it")
+                    {:type :cellar/bad-unique :unique unique}))))
+
+(defn- turn-table-map-into-desired [table-maps tables-by-primary-key {:keys [table columns indexes uniques gates on-change triggers]}]
   (let [table-name (names/turn-table-key-into-table-name table)
         column     (fn [[k type {:keys [optional? default]}]]
                      {:name              (names/turn-key-into-column-name k)
@@ -125,16 +184,21 @@
                       :volatile-default? (types/is-default-volatile? default)})
         table-map  (first (filter #(= table (:table %)) table-maps))]
     (check-triggers table-name table-map)
+    (check-uniques table-name table-map)
     [table-name
      {:columns      (mapv column columns)
       :primary-key  (vec (for [[k _ options] columns :when (:primary-key? options)]
                            (names/turn-key-into-column-name k)))
       :foreign-keys (turn-references-into-foreign-keys table-maps tables-by-primary-key table-name table-map)
       :uniques      (into {}
-                          (for [[k _ {:keys [unique?]}] columns
-                                :when unique?
-                                :let [column-name (names/turn-key-into-column-name k)]]
-                            [(names/make-unique-name table-name [column-name]) {:columns [column-name]}]))
+                          (concat
+                           (for [[k _ {:keys [unique?]}] columns
+                                 :when unique?
+                                 :let [column-name (names/turn-key-into-column-name k)]]
+                             [(names/make-unique-name table-name [column-name]) {:columns [column-name]}])
+                           (for [unique uniques
+                                 :let [column-names (mapv names/turn-key-into-column-name unique)]]
+                             [(names/make-unique-name table-name column-names) {:columns column-names}])))
       :checks       (into {}
                           (for [[k type] columns
                                 :let [values (types/find-enum-values type)]
@@ -146,12 +210,7 @@
       :policies     (if gates (gates/turn-gates-into-policies (names/turn-table-key-into-table-name table) gates) {})
       :triggers     (merge (if on-change (triggers/turn-on-change-into-triggers table-name on-change) {})
                            (triggers/turn-declared-triggers-into-triggers table-name triggers))
-      :indexes      (into {}
-                          (for [index-keys indexes
-                                :let [column-names (mapv names/turn-key-into-column-name index-keys)]]
-                            [(names/make-index-name table-name column-names)
-                             {:columns column-names :unique? false
-                              :sql-body (str "USING btree (" (str/join ", " column-names) ")")}]))}]))
+      :indexes      (into {} (map #(turn-index-into-desired table-name table-map %)) indexes)}]))
 
 (defn- add-unique-keys-of-references
   "Postgres points a reference only at columns unique together: every

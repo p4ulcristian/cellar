@@ -274,10 +274,37 @@
    [:update-of [:maybe [:sequential {:min 1} :qualified-keyword]]]
    [:for-each [:enum :row :statement]]])
 
+(def ^:private index-part
+  ;; a column's key, or an expression as SQL text
+  [:or :qualified-keyword :string])
+
+(def index-shape
+  "An index, every key written out. :columns, in order, each a column's
+   key or an expression (SQL text) with its order: [:order/created-at
+   :descending :nulls-last], :ascending or :descending, :nulls-first or
+   :nulls-last, for a :btree index; [:customer/email :unordered] for the
+   methods that keep no order. :method, :btree :gin :gist :hash or :brin.
+   :ops, the operator class of the columns that don't take their type's
+   own, by column key or expression ({:customer/email :gin-trgm-ops}), {}
+   for none. :unique?, whether no two rows may have the same values (a
+   :btree index only). :where, nil for every row, or the SQL condition of
+   the rows it holds."
+  [:map {:closed true}
+   [:columns [:sequential {:min 1} [:or
+                                    [:tuple index-part [:enum :ascending :descending] [:enum :nulls-first :nulls-last]]
+                                    [:tuple index-part [:= :unordered]]]]]
+   [:method [:enum :btree :gin :gist :hash :brin]]
+   [:ops [:map-of index-part simple-keyword?]]
+   [:unique? :boolean]
+   [:where [:maybe :string]]])
+
 (def table-shape
   "A table map, every key cellar reads written out. :table, its key;
    :columns, [key type] or [key type options] each (column-shape); :indexes,
-   [[key …] …], [] for none; :references, references over several columns
+   each an index-shape, [] for none; :uniques, unique keys over several
+   plain columns, [[key key …] …], [] for none (one column's is its
+   {:unique? true}; one with a condition or an expression is an index
+   with :unique? true); :references, references over several columns
    (reference-shape), [] for none (a one-column one is the column's
    :references); :triggers, the triggers declared on it (trigger-shape),
    [] for none; :gates, nil for none (no row-level security), or a SQL
@@ -287,7 +314,8 @@
   [:map
    [:table :keyword]
    [:columns [:sequential column-shape]]
-   [:indexes [:sequential [:sequential :qualified-keyword]]]
+   [:indexes [:sequential index-shape]]
+   [:uniques [:sequential [:sequential {:min 2} :qualified-keyword]]]
    [:references [:sequential reference-shape]]
    [:triggers [:sequential trigger-shape]]
    [:gates [:maybe [:map {:closed true}

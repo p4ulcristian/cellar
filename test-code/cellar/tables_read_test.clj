@@ -102,6 +102,7 @@
   {:table     :told-things
    :columns   [[:told-thing/id :int {:primary-key? true}]]
    :indexes   []
+   :uniques   []
    :references []
    :triggers  []
    :gates     nil

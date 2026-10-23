@@ -24,7 +24,9 @@
                     [:order/note       :string       {:optional? true}]
                     [:order/created-at :time/instant {:default :now}]
                     [:order/total      :decimal]]
-        :indexes   [[:order/shop-id :order/created-at]]
+        :indexes   [{:columns [[:order/shop-id :ascending :nulls-last] [:order/created-at :descending :nulls-first]]
+                     :method :btree :ops {} :unique? false :where nil}]
+        :uniques   []
         :references []
         :triggers  []
         :gates     nil
@@ -45,9 +47,18 @@
    HikariCP's and PgJDBC's own lines go to the log of the pool they are
    about (cellar.queries.pool-lines).
 
-   A table map writes out every key cellar reads (:indexes, :references
-   and :triggers [] for none, :gates and :on-change nil for none); it is open, so another library's
-   keys ride along. A column is [key type] or [key type options], and says
+   A table map writes out every key cellar reads (:indexes, :uniques,
+   :references and :triggers [] for none, :gates and :on-change nil for
+   none); it is open, so another library's keys ride along. An index is a
+   map with every key written out: {:columns [[:order/shop-id :ascending
+   :nulls-last] [\"lower(order__note)\" :descending :nulls-first]] :method
+   :btree :ops {} :unique? false :where nil}; a :gin, :gist, :hash or :brin
+   index's columns are [:order/note :unordered], and :ops names an operator
+   class by column ({:order/note :gin-trgm-ops}). :uniques are unique keys
+   over several plain columns ([[:order/shop-id :order/number]]); one with
+   a condition or an expression is an index with :unique? true. A plain
+   unique index Postgres has becomes the map's key from that index, with no
+   rebuild. A column is [key type] or [key type options], and says
    only the options it has; an unsaid one is no or none, the safe side
    (NOT NULL, not unique, not a primary key, no default, no reference), and
    an unknown one is refused. The type is in malli's words, as wire

@@ -65,6 +65,7 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
    :columns   [[:shop/id   :uuid   {:primary-key? true :default :random-uuid}]
                [:shop/name :string]]
    :indexes   []
+   :uniques   []
    :references []
    :triggers  []
    :gates     nil
@@ -79,7 +80,13 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
                [:order/total         :decimal      {:default 0}]
                [:order/customer-note :string       {:optional? true}]
                [:order/created-at    :time/instant {:default :now}]]
-   :indexes   [[:order/shop-id :order/created-at]]
+   ;; an index writes out every key: its columns (or expressions, as SQL) with their order and nulls,
+   ;; its method, operator classes, whether unique, and its rows (nil: every row)
+   :indexes   [{:columns [[:order/shop-id :ascending :nulls-last] [:order/created-at :descending :nulls-first]]
+                :method  :btree :ops {} :unique? false :where nil}
+               {:columns [[:order/customer-note :unordered]]
+                :method  :gin :ops {:order/customer-note :gin-trgm-ops} :unique? false :where nil}]
+   :uniques   []
    :references []
    :triggers  []
    :gates     nil
@@ -90,6 +97,7 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
    :columns   [[:partner-payout/id     :uuid    {:primary-key? true :default :random-uuid}]
                [:partner-payout/amount :decimal]]
    :indexes   []
+   :uniques   []
    :references []
    :triggers  []
    :gates     nil
@@ -108,10 +116,25 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
 ;=> [#:order{:id #uuid "1d000000-…" :total 120.50M}]
 ```
 
+An index is a map with every key written out
+([why](decisions/2026-10-23-an-index-is-a-map-and-unique-columns-are-uniques.md)):
+`:columns`, each a column's key or an expression (SQL text) with its order
+and its nulls (`[:order/created-at :descending :nulls-first]`), or
+`[:order/note :unordered]` for a `:gin`, `:gist`, `:hash` or `:brin`
+index; `:method`; `:ops`, the operator classes that aren't the type's own
+(`{:order/customer-note :gin-trgm-ops}`, pg_trgm's: the extension must be
+there), `{}` for none; `:unique?`; and `:where`, nil for every row. A
+table map's `:uniques` are unique keys over several plain columns
+(`[[:conversation/kind :conversation/subject-id]]`, `[]` for none; one
+column's is its `{:unique? true}`); one with a condition or an expression
+is an index with `:unique? true`. An index on a table with rows is built
+and dropped `CONCURRENTLY`, in the slow part; one no map names is dropped.
+
 What a map names that Postgres already has under another name, the same
 shape, is adopted: renamed to the map's name (`ALTER … RENAME`, the catalog
-only, no scan, no rebuild). A key's shape is its columns and target; a
-check's condition, an index's body and a column's default are compared as
+only, no scan, no rebuild); a plain unique index becomes the map's unique key from that
+index (`ADD CONSTRAINT … UNIQUE USING INDEX`). A key's shape is its columns
+and target; a check's condition, an index's body and a column's default are compared as
 Postgres prints them, asked of Postgres itself: the map's pieces are made
 on empty temporary tables in a transaction that is rolled back, and read
 back. Planning so needs the TEMP right and a transaction that isn't

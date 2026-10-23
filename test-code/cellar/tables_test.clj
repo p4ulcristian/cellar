@@ -15,6 +15,7 @@
    :columns   [[:shop/id   :uuid   {:primary-key? true :default :random-uuid}]
                [:shop/name :string]]
    :indexes   []
+   :uniques   []
    :references []
    :triggers  []
    :gates     nil
@@ -29,7 +30,8 @@
                [:order/note       :string       {:optional? true}]
                [:order/paid       :boolean      {:default false}]
                [:order/created-at :time/instant {:default :now}]]
-   :indexes   [[:order/shop-id :order/created-at]]
+   :indexes   [{:columns [[:order/shop-id :ascending :nulls-last] [:order/created-at :ascending :nulls-last]] :method :btree :ops {} :unique? false :where nil}]
+   :uniques   []
    :references []
    :triggers  []
    :gates     nil
@@ -66,6 +68,7 @@
    :columns   [[:invoice/id     :uuid   {:primary-key? true :default :random-uuid}]
                [:invoice/number :string {:unique? true}]]
    :indexes   []
+   :uniques   []
    :references []
    :triggers  []
    :gates     nil
@@ -140,7 +143,7 @@
             (is (= nothing-to-do (plan-of pool [shops orders-with-customer-note] rename)))))
 
         (testing "a new index: in the slow part, built CONCURRENTLY"
-          (let [indexed (update orders-with-customer-note :indexes conj [:order/status])
+          (let [indexed (update orders-with-customer-note :indexes conj {:columns [[:order/status :ascending :nulls-last]] :method :btree :ops {} :unique? false :where nil})
                 plan    (plan-of pool [shops indexed] [])]
             (is (= [] (:instant plan)))
             (is (re-find #"CREATE INDEX CONCURRENTLY" (:sql (first (:slow plan)))))))

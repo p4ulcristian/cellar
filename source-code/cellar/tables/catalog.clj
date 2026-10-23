@@ -17,8 +17,8 @@
    A check's condition and an index's body are as Postgres prints them, so
    the map's, printed by Postgres too (cellar.tables.probe), compare with
    them exactly. Read: unique keys, every check (those whose names end in
-   _not_null, cellar's step to a required column, apart), indexes that are
-   neither unique nor a primary key, row security and policies, and
+   _not_null, cellar's step to a required column, apart), the indexes no
+   primary or unique key is built on, row security and policies, and
    triggers (but Postgres's own). A table outside the public folder is
    named folder.table."
   (:require
@@ -128,8 +128,8 @@
                              empty-tables
                              (sql/find-rows pool find-columns params))
         with-constraints (reduce add-constraint with-columns (sql/find-rows pool find-constraints params))]
-    (-> (reduce (fn [tables {:keys [table-name index-name valid is-unique is-primary backs-constraint definition column-names]}]
-                  (if (or is-unique is-primary backs-constraint)
+    (-> (reduce (fn [tables {:keys [table-name index-name valid is-primary backs-constraint is-unique definition column-names]}]
+                  (if (or is-primary backs-constraint)
                     tables
                     (assoc-in tables [table-name :indexes index-name]
                               {:columns (vec column-names) :unique? is-unique :body (find-body-of-index definition) :valid? valid})))

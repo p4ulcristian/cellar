@@ -215,6 +215,28 @@
           state
           adopted-kinds))
 
+(defn- promote-unique-indexes
+  "A unique key the map names that Postgres has as a plain unique index no
+   map names, on the same columns: made a key from that index (ADD
+   CONSTRAINT … UNIQUE USING INDEX, the catalog only: no scan, no
+   rebuild; Postgres renames the index to the key's name)."
+  [state table-name desired]
+  (reduce (fn [state [n {:keys [columns]}]]
+            (let [plain (str "USING btree (" (str/join ", " columns) ")")
+                  match (first (for [[index-name index] (get-in state [:catalog table-name :indexes])
+                                     :when (and (not (contains? (:indexes desired) index-name))
+                                                (:unique? index) (:valid? index) (= plain (:body index)))]
+                                 index-name))]
+              (if-not match
+                state
+                (-> state
+                    (update-in [:catalog table-name :indexes] dissoc match)
+                    (assoc-in [:catalog table-name :uniques n] {:columns columns})
+                    (add-instant (str "ALTER TABLE " table-name " ADD CONSTRAINT " n " UNIQUE USING INDEX " match)
+                                 (str "unique key " n " from the unique index " match " Postgres has"))))))
+          state
+          (remove #(contains? (get-in state [:catalog table-name :uniques]) (key %)) (:uniques desired))))
+
 (defn- add-printed
   "A table's desired pieces with how Postgres prints them (the probe's):
    a column's :default, a check's :condition, an index's :body."
@@ -560,7 +582,10 @@
                                                (add-printed table (get printed table-name))
                                                table)]))
                        desired)
-        state    (reduce (fn [state table-name] (adopt-pieces state table-name (get desired table-name)))
+        state    (reduce (fn [state table-name]
+                           (-> state
+                               (adopt-pieces table-name (get desired table-name))
+                               (promote-unique-indexes table-name (get desired table-name))))
                          state
                          (filter #(contains? (:catalog state) %) (keys desired)))
         catalog  (:catalog state)

@@ -14,6 +14,7 @@
   {:table      :shops
    :columns    [[:shop/id :uuid {:primary-key? true :default :random-uuid}]]
    :indexes    []
+   :uniques    []
    :references []
    :triggers   []
    :gates      nil
@@ -24,6 +25,7 @@
    :columns    [[:order/id      :uuid {:primary-key? true :default :random-uuid}]
                 [:order/shop-id :uuid {:references {:to :shop/id :on-delete :refuse :on-update :refuse :checked-at :statement}}]]
    :indexes    []
+   :uniques    []
    :references []
    :triggers   []
    :gates      nil
@@ -38,7 +40,8 @@
    :columns    [[:job/id       :uuid {:primary-key? true :default :random-uuid}]
                 [:job/order-id :uuid {:references {:to :order/id :on-delete :refuse :on-update :refuse :checked-at :statement}}]
                 [:job/shop-id  :uuid]]
-   :indexes    [[:job/order-id]]
+   :indexes    [{:columns [[:job/order-id :ascending :nulls-last]] :method :btree :ops {} :unique? false :where nil}]
+   :uniques    []
    :references [{:columns [:job/order-id :job/shop-id] :to [:order/id :order/shop-id] :on-delete :refuse :on-update :cascade :checked-at :statement}]
    :triggers   [fill-trigger]
    :gates      nil
@@ -166,7 +169,7 @@
                           (assoc :columns [[:job/id :uuid {:primary-key? true :default :random-uuid}]
                                            [:job/parent-id :uuid {:references {:to :order/id :on-delete :refuse :on-update :refuse :checked-at :statement}}]
                                            [:job/shop-id :uuid]])
-                          (assoc :indexes [[:job/parent-id]])
+                          (assoc :indexes [{:columns [[:job/parent-id :ascending :nulls-last]] :method :btree :ops {} :unique? false :where nil}])
                           (assoc-in [:references 0 :columns] [:job/parent-id :job/shop-id])
                           (assoc-in [:triggers 0 :update-of] [:job/parent-id]))
               changes [{:id "r1" :rename-column [:jobs :job/order-id :job/parent-id]}]
@@ -194,6 +197,7 @@
    :columns    [[:note/id :uuid {:primary-key? true :default :random-uuid}]
                 [:note/order-id :uuid {:optional? true :references reference}]]
    :indexes    []
+   :uniques    []
    :references []
    :triggers   []
    :gates      nil

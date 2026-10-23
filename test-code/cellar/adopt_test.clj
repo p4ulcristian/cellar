@@ -43,6 +43,7 @@
   {:table      :shops
    :columns    [[:shop/id :uuid {:primary-key? true :default :random-uuid}]]
    :indexes    []
+   :uniques    []
    :references []
    :triggers   []
    :gates      nil
@@ -54,7 +55,8 @@
                 [:order/shop-id :uuid {:references {:to :shop/id :on-delete :refuse :on-update :refuse :checked-at :statement}}]
                 [:order/status  [:enum "draft" "done"] {:default "draft"}]
                 [:order/total   :decimal {:default 0}]]
-   :indexes    [[:order/shop-id]]
+   :indexes    [{:columns [[:order/shop-id :ascending :nulls-last]] :method :btree :ops {} :unique? false :where nil}]
+   :uniques    []
    :references []
    :triggers   []
    :gates      nil
