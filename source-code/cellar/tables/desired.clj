@@ -259,9 +259,21 @@
 (def ^:private leading-comments
   "(?:\\s+|--[^\\n]*(?:\\n|$)|/\\*.*?\\*/)*")
 
+(def ^:private identifier
+  ;; a plain name, or a quoted one ("may orders/edit on orders", "" for a quote inside)
+  "(?:[a-z_][a-z0-9_]*|\"(?:[^\"]|\"\")+\")")
+
 (def ^:private function-header
   (re-pattern (str "(?is)^(" leading-comments "CREATE\\s+OR\\s+REPLACE\\s+FUNCTION\\s+)"
-                   "(?:([a-z_][a-z0-9_]*)\\.)?([a-z_][a-z0-9_]*)(?=\\s*\\()")))
+                   "((?:(" identifier ")\\.)?(" identifier "))(?=\\s*\\()")))
+
+(defn- turn-identifier-into-name
+  "A name as Postgres keeps it: a quoted one without its quotes, a plain
+   one in lower case, as Postgres folds it."
+  [identifier]
+  (if (str/starts-with? identifier "\"")
+    (str/replace (subs identifier 1 (dec (count identifier))) "\"\"" "\"")
+    (str/lower-case identifier)))
 
 (def ^:private view-header
   (re-pattern (str "(?is)^(" leading-comments "CREATE\\s+(?:OR\\s+REPLACE\\s+)?VIEW\\s+)"
@@ -279,24 +291,48 @@
   (when (seq (:param-names (params/turn-sql-text-into-statement sql-text)))
     (throw-bad-file path "has params; a function's or a view's SQL runs without any")))
 
+(defn- throw-bad-function [function-name message]
+  (throw (ex-info (str "the made function " function-name ": " message) {:type :cellar/bad-function :name function-name})))
+
+(defn- turn-function-into-desired
+  "One entry of :functions, a file's path or a made function {:name :sql},
+   as {:key :source :from :folder :name :sql :header :rest}: :key its place
+   in the list, :source what a message names it by."
+  [i entry]
+  (let [made?    (map? entry)
+        source   (if made? (str "the made function " (:name entry)) entry)
+        sql-text (if made? (:sql entry) (read-sql-file entry))
+        refuse   (fn [message] (if made? (throw-bad-function (:name entry) message) (throw-bad-file entry message)))
+        [header-and-name header written-name folder function-name]
+        (or (re-find function-header sql-text)
+            (refuse (str (if made? "its SQL" "a function's file") " starts with CREATE OR REPLACE FUNCTION and a name")))]
+    (when (and made? (not= written-name (:name entry)))
+      (refuse (str "its SQL makes " written-name ", not the :name it says")))
+    (when (seq (:param-names (params/turn-sql-text-into-statement sql-text)))
+      (refuse "has params; a function's or a view's SQL runs without any"))
+    {:key    i
+     :source source
+     :from   (if made? "made by a library" (str "from " entry))
+     :folder (if folder (turn-identifier-into-name folder) "public")
+     :name   (turn-identifier-into-name function-name)
+     :sql    sql-text
+     :header header
+     :rest   (subs sql-text (count header-and-name))}))
+
 (defn turn-declared-into-desired
   "The extensions, functions and views the app declares, their files read:
-   {:extensions [name] :functions [{:file :folder :name :sql :header
-   :rest}] :views [{:file :view-name :sql :header :rest}]}, :header and
-   :rest what comes before and after the name, so the probe can make it
-   under another. A file that isn't one
-   CREATE OR REPLACE FUNCTION (or CREATE VIEW) with a plain name throws
-   :cellar/bad-file."
+   {:extensions [name] :functions [{:key :source :from :folder :name :sql
+   :header :rest}] :views [{:file :view-name :sql :header :rest}]}, :header
+   and :rest what comes before and after the name, so the probe can make
+   it under another. A function is a .sql file's path, or a function a
+   library made, {:name \"doorman.denied_ab12\" :sql \"CREATE OR REPLACE
+   FUNCTION doorman.denied_ab12() …\"}, its :name as its SQL writes it. A
+   file that isn't one CREATE OR REPLACE FUNCTION (or CREATE VIEW) with a
+   plain name throws :cellar/bad-file; a made function that isn't one, or
+   makes another name than its :name, :cellar/bad-function."
   [{:keys [extensions functions views]}]
   {:extensions (vec extensions)
-   :functions  (vec (for [path functions
-                          :let [sql-text (read-sql-file path)
-                                [header-and-name header folder function-name]
-                                (or (re-find function-header sql-text)
-                                    (throw-bad-file path "a function's file starts with CREATE OR REPLACE FUNCTION and a plain name"))]]
-                      (do (check-no-params path sql-text)
-                          {:file   path :folder (or folder "public") :name function-name :sql sql-text
-                           :header header :rest (subs sql-text (count header-and-name))})))
+   :functions  (vec (map-indexed turn-function-into-desired functions))
    :views      (vec (for [path views
                           :let [sql-text (read-sql-file path)
                                 [header-and-name header folder view-name]

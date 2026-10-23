@@ -172,6 +172,55 @@
          (:type (ex-data (try (cellar/make-plan-from-tables nil (dissoc declared :views) []) (catch Exception e e)))))
       "every key written out"))
 
+(defn- make-function [function-name answer]
+  {:name function-name
+   :sql  (str "CREATE OR REPLACE FUNCTION " function-name "() RETURNS boolean LANGUAGE plpgsql STABLE AS $$ BEGIN RETURN "
+              answer "; END $$")})
+
+(deftest a-function-a-library-makes-is-declared-like-a-files
+  (if-not port
+    (println "cellar.objects-test: skipped, CELLAR_TEST_PORT is not set")
+    (with-empty-database
+      (fn [pool]
+        (let [may-see  (make-function "public.\"may see on jobs\"" "true")
+              gated    (assoc jobs :gates {:read   "public.\"may see on jobs\"()" :insert "true"
+                                           :update "true"                      :delete "false"})
+              with-it  (assoc declared :tables [gated] :functions ["cellar/objects/count_jobs.sql" may-see])]
+          (testing "made in its folder before the gate that calls it, then nothing differs"
+            (let [whys (map :why (:instant (plan-of pool with-it [])))]
+              (is (some #{"function public.may see on jobs made by a library"} whys))
+              (is (< (.indexOf ^java.util.List (vec whys) "function public.may see on jobs made by a library")
+                     (first (keep-indexed #(when (str/starts-with? %2 "missing policy") %1) whys)))
+                  "the function before the table's gates"))
+            (migrate-and-wait! pool with-it [])
+            (is (= nothing-to-do (plan-of pool with-it [])))
+            (is (= [{:job/seen true}] (find-rows pool "SELECT public.\"may see on jobs\"() AS job__seen"))))
+          (testing "another body: replaced, nothing else"
+            (let [changed (assoc with-it :functions ["cellar/objects/count_jobs.sql" (make-function "public.\"may see on jobs\"" "false")])]
+              (is (= ["SET LOCAL check_function_bodies = off" "function public.may see on jobs made by a library"]
+                     (map #(if (str/starts-with? (:sql %) "SET") (:sql %) (:why %)) (:instant (plan-of pool changed [])))))
+              (migrate-and-wait! pool changed [])
+              (is (= nothing-to-do (plan-of pool changed [])))))
+          (testing "gone with the gate that called it: the gate first, then the function"
+            (let [bare (assoc declared :functions ["cellar/objects/count_jobs.sql"])
+                  sqls (map :sql (:instant (plan-of pool bare [])))]
+              (is (= "DROP FUNCTION \"public\".\"may see on jobs\"()" (last sqls)))
+              (migrate-and-wait! pool bare [])
+              (is (= nothing-to-do (plan-of pool bare []))))))))))
+
+(deftest a-made-function-is-one-function-named-as-it-says
+  (doseq [[why entry] [["another name than its :name" {:name "made.other" :sql (:sql (make-function "made.one" "true"))}]
+                       ["not a function"               {:name "made.one" :sql "SELECT 1"}]
+                       ["two names"                    {:name "made.one" :sql "CREATE OR REPLACE FUNCTION made.one.two() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$"}]]]
+    (is (= :cellar/bad-function
+           (:type (ex-data (try (cellar/make-plan-from-tables nil (assoc declared :functions [entry]) [])
+                                (catch Exception e e)))))
+        why))
+  (is (= :cellar/bad-tables
+         (:type (ex-data (try (cellar/make-plan-from-tables nil (assoc declared :functions [{:name "made.one"}]) [])
+                              (catch Exception e e)))))
+      "every key written out"))
+
 (deftest the-apps-own-role-can-check-functions-and-views
   (if-not port
     (println "cellar.objects-test: skipped, CELLAR_TEST_PORT is not set")

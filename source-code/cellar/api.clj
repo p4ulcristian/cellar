@@ -82,13 +82,15 @@
    namespace is in that Postgres schema (folder): :billing/invoices is
    billing.invoices; one without is in public.
 
-   Beside the tables, the app declares its extensions, and the .sql files
-   of its functions (one CREATE OR REPLACE FUNCTION each) and views (one
-   CREATE VIEW each, in order), every key written out: {:tables [...]
+   Beside the tables, the app declares its extensions, its functions (a
+   .sql file each, one CREATE OR REPLACE FUNCTION, or one a library made
+   from data, {:name \"doorman.denied_ab12\" :sql \"CREATE OR REPLACE
+   FUNCTION doorman.denied_ab12() …\"}) and the .sql files of its views
+   (one CREATE VIEW each, in order), every key written out: {:tables [...]
    :extensions [\"pg_trgm\"] :functions [\"app/db/next_job_number.sql\"]
    :views [\"app/db/report_totals.sql\"]}. They are compared as Postgres
    prints them and made extensions first, then functions, tables, views; a
-   function or view in the maps' folders that no file makes is dropped, an
+   function or view in the maps' folders that nothing declared makes is dropped, an
    extension no list names is a stop. A table's :checks are SQL
    conditions, [\"jsonb_typeof(order__photos) = 'array'\"].
 
@@ -345,7 +347,9 @@
 
      {:tables     [shops orders]                     ; the table maps
       :extensions [\"pg_trgm\"]                       ; [] for none
-      :functions  [\"app/db/next_job_number.sql\"]    ; one CREATE OR REPLACE FUNCTION per file, [] for none
+      :functions  [\"app/db/next_job_number.sql\"    ; one CREATE OR REPLACE FUNCTION per file,
+                   {:name \"doorman.denied_ab12\"  ; or one a library made, its name as its SQL writes it;
+                    :sql  \"CREATE OR …\"}]       ; [] for none
       :views      [\"app/db/report_totals.sql\"]}     ; one CREATE VIEW per file, in order, [] for none
 
    How Postgres prints the maps' checks, indexes and defaults, the files'

@@ -340,18 +340,27 @@
   "The table maps."
   [:sequential table-shape])
 
+(def made-function-shape
+  "A function a library makes from data (doorman's from the app's
+   sentences), every key written out: :name, its name as its SQL writes
+   it (\"doorman.denied_ab12\", doorman.\"may orders/edit on orders\"),
+   and :sql, its one CREATE OR REPLACE FUNCTION."
+  [:map {:closed true}
+   [:name :string]
+   [:sql :string]])
+
 (def declared-shape
   "What the app declares its database has, every key written out:
    :tables, the table maps; :extensions, the extensions' names
-   (\"pg_trgm\"), [] for none; :functions, the .sql files on the
-   classpath that make its functions, one CREATE OR REPLACE FUNCTION each,
-   [] for none; :views, the .sql files that make its views, one CREATE
-   VIEW each, in the order they are made (a view after those it reads),
-   [] for none."
+   (\"pg_trgm\"), [] for none; :functions, each the .sql file on the
+   classpath that makes it, one CREATE OR REPLACE FUNCTION, or a function
+   a library made (made-function-shape), [] for none; :views, the .sql
+   files that make its views, one CREATE VIEW each, in the order they are
+   made (a view after those it reads), [] for none."
   [:map {:closed true}
    [:tables tables-shape]
    [:extensions [:sequential :string]]
-   [:functions [:sequential :string]]
+   [:functions [:sequential [:or :string made-function-shape]]]
    [:views [:sequential :string]]])
 
 ;; -----------------------------------------------------------------------------

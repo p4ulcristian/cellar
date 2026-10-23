@@ -93,21 +93,21 @@
 (defn- print-functions
   "Each declared function made under a temporary name
    (pg_temp.cellar_probe_function_<n>), as anyone with the TEMP right may,
-   and read back: {file {:identity [folder name arguments] :definition}},
-   its definition without its name (catalog/leave-out-function-name). A file
-   Postgres refuses is a stop."
+   and read back: {key {:identity [folder name arguments] :definition}}, by
+   its place in the list, its definition without its name
+   (catalog/leave-out-function-name). One Postgres refuses is a stop."
   [on functions]
-  (reduce (fn [result [i {:keys [file folder name header rest]}]]
+  (reduce (fn [result [i {:keys [key source folder name header rest]}]]
             (let [probe-name (str "cellar_probe_function_" i)
                   refusal    (try-in-savepoint on (str header "pg_temp." probe-name rest))
                   printed    (when-not refusal (sql/find-rows on find-function-printed {:name probe-name}))]
               (cond
                 refusal
-                (update result :stops conj (str file " can't be made: " refusal))
+                (update result :stops conj (str source " can't be made: " refusal))
                 (not= 1 (count printed))
-                (update result :stops conj (str file " makes " (count printed) " functions, not one"))
+                (update result :stops conj (str source " makes " (count printed) " functions, not one"))
                 :else
-                (assoc-in result [:printed file] {:identity   [folder name (:arguments (first printed))]
+                (assoc-in result [:printed key] {:identity   [folder name (:arguments (first printed))]
                                                   :definition (catalog/leave-out-function-name (:definition (first printed)))}))))
           {:printed {} :stops []}
           (map-indexed vector functions)))

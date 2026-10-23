@@ -627,8 +627,8 @@
         folders (distinct (remove (:folders objects)
                                   (concat (map :folder functions)
                                           (map (comp names/find-folder-of-table :view-name) views))))
-        to-run  (filter (fn [{:keys [file]}]
-                          (let [{:keys [identity definition]} (get-in printed [:functions file])]
+        to-run  (filter (fn [{:keys [key]}]
+                          (let [{:keys [identity definition]} (get-in printed [:functions key])]
                             (or (nil? identity) (not= definition (get-in objects [:functions identity])))))
                         functions)]
     (as-> state state
@@ -650,23 +650,23 @@
       (if (seq to-run)
         (add-instant state "SET LOCAL check_function_bodies = off" "functions are made before the tables and columns they read")
         state)
-      (reduce (fn [state {:keys [file folder name sql]}]
-                (add-instant state sql (str "function " folder "." name " from " file)))
+      (reduce (fn [state {:keys [from folder name sql]}]
+                (add-instant state sql (str "function " folder "." name " " from)))
               state to-run)
       (assoc state :views-to-make to-make))))
 
 (defn- plan-objects-after
   "After the tables, in the instant part: the functions Postgres has that
-   no file makes dropped (by folder, name and arguments), and the views to
+   nothing declared makes dropped (by folder, name and arguments), and the views to
    make made, in their list's order."
   [state {:keys [objects declared printed]}]
-  (let [identities (set (keep #(get-in printed [:functions (:file %) :identity]) (:functions declared)))]
+  (let [identities (set (keep #(get-in printed [:functions (:key %) :identity]) (:functions declared)))]
     (as-> state state
       (reduce (fn [state [[folder function-name arguments :as identity] _]]
                 (if (contains? identities identity)
                   state
                   (add-instant state (str "DROP FUNCTION " (quote-name folder) "." (quote-name function-name) "(" arguments ")")
-                               (str "function " folder "." function-name "(" arguments ") is in no file"))))
+                               (str "function " folder "." function-name "(" arguments ") is in no file and no made function"))))
               state (sort-by key (:functions objects)))
       (reduce (fn [state {:keys [view-name file sql]}]
                 (add-instant state sql (str "view " view-name " from " file)))
@@ -709,7 +709,7 @@
    which have run, and has-rows? (a table name -> whether it has rows,
    asked only when it matters). In the instant part: the views that go,
    the extensions and functions, the references no map names, the
-   changes, the tables, the functions no file makes dropped, the views
+   changes, the tables, the functions nothing declared makes dropped, the views
    made."
   [{:keys [catalog objects desired declared printed changes changes-done has-rows?]}]
   (let [fresh?   (is-fresh? catalog desired changes-done)

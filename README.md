@@ -107,8 +107,8 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
    :gates     nil
    :on-change nil})
 
-;; beside the tables, every key written out: the extensions, and the .sql files of the
-;; functions (one CREATE OR REPLACE FUNCTION each) and the views (one CREATE VIEW each, in order)
+;; beside the tables, every key written out: the extensions, the functions (a .sql file each, one
+;; CREATE OR REPLACE FUNCTION, or {:name :sql} a library made) and the views (one CREATE VIEW each, in order)
 (cellar/migrate! pool {:tables     [shops orders partner-payouts]
                        :extensions ["pg_trgm"]                          ; the gin index's gin_trgm_ops
                        :functions  ["app/db/next_order_number.sql"]
@@ -146,13 +146,19 @@ proven in the slow part. Beside the tables, `migrate!` (and
 database's extensions and the `.sql` files of its functions and views,
 every key written out, `[]` for none
 ([why](decisions/2026-10-23-checks-functions-views-and-extensions-are-declared-like-tables.md)).
+A function may also be one a library makes from data, its name as its
+SQL writes it and its one `CREATE OR REPLACE FUNCTION`:
+`{:name "doorman.denied_ab12" :sql "CREATE OR REPLACE FUNCTION doorman.denied_ab12() …"}`,
+compared, made and dropped exactly like a file's; one whose SQL makes
+another name is refused, `:cellar/bad-function`
+([why](decisions/2026-10-23-functions-may-be-sql-text-a-library-makes.md)).
 They are compared as Postgres prints them and made in the order
 extensions, functions, tables, views, all in the instant part: a function
 whose printed definition differs is replaced (`CREATE OR REPLACE`, its body
 unchecked, so it may read a column the same plan adds); a view that
 differs, or reads a column a pending change drops, is dropped before the
 changes and made again after the tables, with every view over it. A
-function or a view in the maps' folders that no file makes is dropped; an
+function or a view in the maps' folders that nothing declared makes is dropped; an
 extension no list names is a stop (its types may hold data), plpgsql
 aside. A view made again loses its grants until `grant-tables-to-role!`
 runs again. A fresh database gets them all, from the files, never from the
