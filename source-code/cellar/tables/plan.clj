@@ -96,11 +96,51 @@
         :when (not= from-table table-name)]
     from-table))
 
+(defn- quote-text [text]
+  (str "'" (str/replace text "'" "''") "'"))
+
+(defn- change-column-type
+  "A column's type changed to its map's, on paper, and in the slow part
+   (it may rewrite the table): ALTER COLUMN … TYPE, then the change marked
+   done, so a failed ALTER leaves it to run again. The table is the one map
+   with the column; :from must be what Postgres has. Already of the map's
+   type, it is only marked done."
+  [state {:keys [id from] column-key :change-column-type} stop]
+  (let [column-name (names/turn-key-into-column-name column-key)
+        has-column? (fn [columns] (some #(when (= column-name (:name %)) %) columns))
+        tables      (for [[table-name {:keys [columns]}] (:desired state) :when (has-column? columns)] table-name)
+        table-name  (first tables)
+        to          (:type (has-column? (get-in state [:desired table-name :columns])))
+        existing    (has-column? (get-in state [:catalog table-name :columns]))
+        where       (str table-name "." column-name)]
+    (cond
+      (empty? tables)              (stop (str "no map has a column " column-name))
+      (next tables)                (stop (str "several maps have a column " column-name ": " (str/join ", " (sort tables))))
+      (nil? existing)              (stop (str "there is no column " where " in Postgres to change"))
+      (= to (:type existing))      state
+      (not= from (:type existing)) (stop (str where " is " (:type existing) " in Postgres, not " from " as its :from says"))
+      :else (-> state
+                (add-slow (str "ALTER TABLE " table-name " ALTER COLUMN " column-name " TYPE " to
+                               " USING " column-name "::" to)
+                          (str "change " id ": " where " from " from " to " to))
+                (add-slow (str "INSERT INTO cellar.changes_done (change_done__id) VALUES (" (quote-text id) ")"
+                               " ON CONFLICT (change_done__id) DO NOTHING")
+                          (str "change " id " done, after its type change"))
+                (update :marked-in-slow-part (fnil conj #{}) id)
+                (update :type-changes (fnil conj []) [table-name column-name id])
+                (update-in [:catalog table-name :columns]
+                           (partial mapv #(if (= column-name (:name %)) (assoc % :type to) %)))))))
+
 (defn- apply-change
   [state {:keys [id rename-table rename-column drop-column drop-table run-sql-file why] :as change}]
   (let [catalog (:catalog state)
         stop    #(add-stop state (str "change " id ": " %))]
     (cond
+      (contains? change :change-column-type)
+      (if (and (keyword? (:change-column-type change)) (string? (:from change)))
+        (change-column-type state change stop)
+        (stop "a type change names its column's key and says the type Postgres has, {:change-column-type :order/note :from \"character(3)\"}"))
+
       rename-table
       (let [[from to] (map names/turn-table-key-into-table-name rename-table)]
         (cond
@@ -340,7 +380,8 @@
         (add-instant state (str "ALTER TABLE " table-name " ADD COLUMN " (write-column column)) (str "missing column " where)))
       (cond-> state
         (not= type (:type existing))
-        (add-stop (str where " is " (:type existing) " in Postgres but " type " in its map; type changes aren't in v1"))
+        (add-stop (str where " is " (:type existing) " in Postgres but " type " in its map: add a change, "
+                       "{:change-column-type <its key> :from \"" (:type existing) "\"}"))
 
         (and (not not-null?) (:not-null? existing))
         (add-instant (str "ALTER TABLE " table-name " ALTER COLUMN " name " DROP NOT NULL") (str where " became optional"))
@@ -558,7 +599,7 @@
   (let [tagged   (into {} (for [[table-name table] catalog]
                             [table-name (update table :foreign-keys
                                                 #(into {} (for [[n fk] %] [n (assoc fk :origin [table-name n])])))]))
-        on-paper (:catalog (reduce apply-change {:catalog tagged :instant [] :slow [] :stops []} pending))]
+        on-paper (:catalog (reduce apply-change {:catalog tagged :desired desired :instant [] :slow [] :stops []} pending))]
     (for [[table-name {:keys [foreign-keys]}] on-paper
           :when (contains? desired table-name)
           :let [wanted  (get-in desired [table-name :foreign-keys])
@@ -700,6 +741,23 @@
       {}
       (into {} (filter #(or (contains? catalog (key %)) (contains? renamed-into (key %)))) desired))))
 
+(defn- stop-type-changes-under-views
+  "A type change of a column a declared view reads is a stop: Postgres
+   refuses the ALTER while the view stands, and the slow part can't take
+   the view away while the app runs. A view no file makes goes in the
+   instant part, before."
+  [state objects declared]
+  (reduce (fn [state [table-name column-name id]]
+            (if-let [views (seq (sort (for [[view-name {:keys [reads]}] (:views objects)
+                                            :when (contains? reads [table-name column-name])
+                                            :when (some #(= view-name (:view-name %)) (:views declared))]
+                                        view-name)))]
+              (add-stop state (str "change " id ": " table-name "." column-name " is read by the views " (str/join ", " views)
+                                   ", which Postgres keeps from changing its type: take them out of :views for this deploy"))
+              state))
+          state
+          (:type-changes state)))
+
 (defn make-plan
   "The plan from what Postgres has (catalog, its tables; objects, its
    folders, extensions, functions and views), what the maps and files say
@@ -714,7 +772,7 @@
   [{:keys [catalog objects desired declared printed changes changes-done has-rows?]}]
   (let [fresh?   (is-fresh? catalog desired changes-done)
         pending  (remove #(contains? changes-done (:id %)) changes)
-        start    (plan-objects-before {:catalog catalog :instant [] :slow [] :stops [] :waiting-references []
+        start    (plan-objects-before {:catalog catalog :desired desired :instant [] :slow [] :stops [] :waiting-references []
                                        :changes-to-mark (mapv :id pending)}
                                       {:objects objects :declared declared :printed printed :pending (if fresh? [] pending)})
         state    (if fresh?
@@ -757,5 +815,7 @@
                                                   "or {:drop-table :" table-name " :why \"…\"}")))
                            state
                            (remove #(contains? desired %) (keys catalog)))
-                   (plan-objects-after state {:objects objects :declared declared :printed printed}))]
+                   (plan-objects-after state {:objects objects :declared declared :printed printed})
+                   (stop-type-changes-under-views state objects declared)
+                   (update state :changes-to-mark (partial filterv #(not (contains? (:marked-in-slow-part state) %)))))]
     (select-keys state [:instant :slow :stops :changes-to-mark])))

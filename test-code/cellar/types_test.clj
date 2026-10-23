@@ -116,3 +116,57 @@
             :job/slots [{:slot/day ["should be a day, like 2026-11-15"]}]}
            (:errors (way-in (assoc row :job/kind "longer than ten" :job/height 2147483648 :job/min-qty "12.345"
                                    :job/flags [(apply str (repeat 65 "x"))] :job/slots [{:slot/day "soon"}])))))))
+
+(def ^:private sheets
+  {:table      :price-sheets
+   :columns    [[:price-sheet/id       :uuid {:primary-key? true :default :random-uuid}]
+                [:price-sheet/currency :string]]
+   :indexes    []
+   :uniques    []
+   :checks     []
+   :references []
+   :triggers   []
+   :gates      nil
+   :on-change  nil})
+
+(deftest a-column-changes-type-by-a-change
+  (if-not port
+    (println "cellar.types-test: skipped, CELLAR_TEST_PORT is not set")
+    (with-empty-database
+      (fn [pool]
+        (let [declared (test-settings/declare-tables [sheets])
+              plan     #(select-keys (cellar/make-plan-from-tables pool declared %) [:instant :slow :stops :changes-to-mark])
+              change   {:id "t1" :change-column-type :price-sheet/currency :from "character(3)"}]
+          @(:slow-part (cellar/migrate! pool declared [] test-settings/migrate-options))
+          (run-sql! pool "ALTER TABLE price_sheets ALTER COLUMN price_sheet__currency TYPE character(3)")
+          (run-sql! pool "INSERT INTO price_sheets (price_sheet__currency) VALUES ('EUR'), ('HU ')")
+          (testing "without the change: a stop that says the change to write"
+            (is (= ["price_sheets.price_sheet__currency is character(3) in Postgres but text in its map: add a change, {:change-column-type <its key> :from \"character(3)\"}"]
+                   (:stops (plan [])))))
+          (testing ":from must be what Postgres has"
+            (is (= "change t1: price_sheets.price_sheet__currency is character(3) in Postgres, not character(2) as its :from says"
+                   (first (:stops (plan [(assoc change :from "character(2)")]))))))
+          (testing "the change: the type in the slow part, then marked done there"
+            (is (= {:instant         []
+                    :slow            ["ALTER TABLE price_sheets ALTER COLUMN price_sheet__currency TYPE text USING price_sheet__currency::text"
+                                      "INSERT INTO cellar.changes_done (change_done__id) VALUES ('t1') ON CONFLICT (change_done__id) DO NOTHING"]
+                    :stops           []
+                    :changes-to-mark []}
+                   (update (plan [change]) :slow (partial mapv :sql))))
+            (is (cellar/does-database-match-tables? pool declared [change]) "the app may start: only a slow part is left")
+            @(:slow-part (cellar/migrate! pool declared [change] test-settings/migrate-options))
+            (is (= nothing-to-do (plan [change])) "and then nothing differs, the change done")
+            (is (= ["EUR" "HU"] (map :price-sheet/currency (find-rows pool "SELECT price_sheet__currency FROM price_sheets ORDER BY 1" {})))
+                "the rows kept, character's padding gone as Postgres casts it")))))))
+
+(deftest a-type-change-a-view-reads-is-a-stop
+  (if-not port
+    (println "cellar.types-test: skipped, CELLAR_TEST_PORT is not set")
+    (with-empty-database
+      (fn [pool]
+        (let [declared (assoc (test-settings/declare-tables [sheets]) :views ["cellar/objects/currencies.sql"])]
+          @(:slow-part (cellar/migrate! pool (assoc declared :views []) [] test-settings/migrate-options))
+          (run-sql! pool "ALTER TABLE price_sheets ALTER COLUMN price_sheet__currency TYPE character(3)")
+          (run-sql! pool "CREATE VIEW currencies AS SELECT DISTINCT price_sheet__currency FROM price_sheets")
+          (is (= ["change t1: price_sheets.price_sheet__currency is read by the views currencies, which Postgres keeps from changing its type: take them out of :views for this deploy"]
+                 (:stops (cellar/make-plan-from-tables pool declared [{:id "t1" :change-column-type :price-sheet/currency :from "character(3)"}])))))))))

@@ -113,7 +113,8 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
                        :extensions ["pg_trgm"]                          ; the gin index's gin_trgm_ops
                        :functions  ["app/db/next_order_number.sql"]
                        :views      ["app/db/shop_totals.sql"]}
-                 [{:id "2026-10-23-rename-order-note" :rename-column [:orders :order/note :order/customer-note]}]
+                 [{:id "2026-10-23-rename-order-note" :rename-column [:orders :order/note :order/customer-note]}
+                  {:id "2026-10-24-currency-to-text" :change-column-type :shop/currency :from "character(3)"}]
                  {:instant-part {:statement-timeout-ms 30000 :lock-timeout-ms 5000}   ; an ALTER waits 5 s for its lock, then fails
                   :slow-part    {:statement-timeout-ms :none :lock-timeout-ms 5000}   ; an index build takes what it takes
                   :log          log})                                                 ; the app's: each planned statement
@@ -205,7 +206,13 @@ what Postgres would
 | `[:json shape]` | `jsonb` |
 
 Any other type, or other properties, is refused (`:cellar/unknown-type`),
-and a type Postgres has otherwise is a stop. A `:default` is
+and a type Postgres has otherwise is a stop, until a change moves it:
+`{:id "…" :change-column-type :shop/currency :from "character(3)"}`, `:from`
+what Postgres has (else a stop, named). The plan compares the column as if
+it had run, and runs it in the slow part, `ALTER COLUMN … TYPE … USING`
+(it may rewrite the table: try its time on a copy), marking the change
+done after it there; a declared view that reads the column is a stop
+([why](decisions/2026-10-23-a-column-changes-type-by-a-change-the-plan-understands.md)). A `:default` is
 `:random-uuid` (`gen_random_uuid()`), `:time-ordered-uuid` (Postgres 18's
 `uuidv7()`), `:now`, `:today` (`CURRENT_DATE`), a number, true/false, text,
 or `[]`/`{}` (empty JSON on a `:json` column; `[]` an empty array on a

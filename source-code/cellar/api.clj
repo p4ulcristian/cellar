@@ -102,7 +102,15 @@
       {:id \"2026-10-24-drop-order-fax\"    :drop-column [:orders :order/fax] :why \"no faxes since 2019\"}
       {:id \"2026-10-25-rename-jobs\"       :rename-table [:jobs :coatings]}
       {:id \"2026-10-26-drop-old-things\"   :drop-table :old-things :why \"…\"}
-      {:id \"2026-10-27-fill-priority\"     :run-sql-file \"app/changes/fill_priority.sql\"}]
+      {:id \"2026-10-27-fill-priority\"     :run-sql-file \"app/changes/fill_priority.sql\"}
+      {:id \"2026-10-28-currency-to-text\"  :change-column-type :price-sheet/currency :from \"character(3)\"}]
+
+   A type change moves a column from the type Postgres has (:from, as
+   Postgres prints it; else a stop) to its map's: the column's one map
+   names the table, the plan compares the column as if it had run, and it
+   runs in the slow part (ALTER COLUMN … TYPE … USING, which may rewrite
+   the table), marked done there after it; a declared view that reads the
+   column is a stop.
 
    A plan has two parts: :instant (only Postgres's catalog changes; before
    the app starts) and :slow (reads or writes every row: indexes built

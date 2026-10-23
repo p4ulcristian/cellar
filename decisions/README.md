@@ -20,6 +20,7 @@ The first three were made while cellar was a library inside Groundwork, a Clojur
 - [An index is a map with every key written out; unique plain columns are :uniques](2026-10-23-an-index-is-a-map-and-unique-columns-are-uniques.md)
 - [A trigger says when it is called](2026-10-23-a-trigger-says-when-it-is-called.md)
 - [The references no map names go before the changes](2026-10-23-references-no-map-names-go-before-the-changes.md)
-- [A column's type states Postgres's limit, in malli's words](2026-10-23-a-columns-type-states-postgres-limit-in-malli-words.md)
+- [A column's type states Postgres's limit, in malli's words](2026-10-23-a-columns-type-states-postgres-limit-in-malli-words.md), added to by [A column changes type by a change the plan understands](2026-10-23-a-column-changes-type-by-a-change-the-plan-understands.md)
 - [Checks, functions, views and extensions are declared, compared and dropped like tables](2026-10-23-checks-functions-views-and-extensions-are-declared-like-tables.md), changed in part by [:functions may be SQL text a library makes, as well as files](2026-10-23-functions-may-be-sql-text-a-library-makes.md)
 - [:functions may be SQL text a library makes, as well as files](2026-10-23-functions-may-be-sql-text-a-library-makes.md)
+- [A column changes type by a change the plan understands](2026-10-23-a-column-changes-type-by-a-change-the-plan-understands.md)
