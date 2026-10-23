@@ -1,6 +1,6 @@
 # Every value that sets behaviour is a setting; no hidden defaults
 
-> **Changed in part** by [A transaction keeps work to run after its commit](2026-10-23-a-transaction-keeps-work-to-run-after-its-commit.md) (2026-10-23, on tidy-up): `run-in-transaction!` takes `{:read-only? false :log log}`, the caller's log required too.
+> **Changed in part** by [A transaction keeps work to run after its commit](2026-10-23-a-transaction-keeps-work-to-run-after-its-commit.md) (2026-10-23, on tidy-up): `run-in-transaction!` takes `{:read-only? false :log log}`, the caller's log (or nil, for a transaction that keeps no work) written out too.
 
 > **Changed in part** by [Checks, functions, views and extensions are declared, compared and dropped like tables](2026-10-23-checks-functions-views-and-extensions-are-declared-like-tables.md) (2026-10-23, on tidy-up): `migrate!`, `make-plan-from-tables` and `does-database-match-tables?` take `{:tables :extensions :functions :views}`, every key written out, in place of the tables.
 

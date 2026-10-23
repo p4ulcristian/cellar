@@ -57,9 +57,14 @@
                    (for [[level event data] @inners] [level event (ex-message (:error data))]))
                 "work kept inside a nested call goes to that call's log")
             (is (= [] (filter #(= :cellar/after-commit-failed (second %)) @lines)) "none to the pool's")))
-        (testing "run-in-transaction! takes the caller's log, required"
+        (testing "run-in-transaction! takes the caller's log, required; one opened with :log nil keeps no work"
           (is (= {:log ["missing required key"]}
-                 (:errors (ex-data (try (cellar/run-in-transaction! pool {:read-only? false} (fn [_])) (catch Exception e e)))))))
+                 (:errors (ex-data (try (cellar/run-in-transaction! pool {:read-only? false} (fn [_])) (catch Exception e e))))))
+          (is (= :cellar/transaction-without-log
+                 (:type (ex-data (try (cellar/run-in-transaction! pool {:read-only? false :log nil}
+                                        (fn [transaction] (cellar/run-after-commit! transaction #(swap! ran conj :never))))
+                                      (catch Exception e e))))))
+          (is (= [:second] @ran) "nothing kept"))
         (testing "a pool is refused: there is no commit to wait for"
           (is (= :cellar/not-a-transaction
                  (:type (ex-data (try (cellar/run-after-commit! pool #(swap! ran conj :never)) (catch Exception e e)))))))

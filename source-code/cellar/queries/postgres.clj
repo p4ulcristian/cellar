@@ -133,8 +133,7 @@
           (reset! holder datasource)
           {:cellar/datasource datasource
            :cellar/pool-name  pool-name
-           :cellar/meter      meter
-           :cellar/log        (:log options)})   ; for cellar's own transactions, which keep no work
+           :cellar/meter      meter})
         (catch Throwable e
           (pool-lines/remove-pool! pool-name)
           (throw e))))))
@@ -259,7 +258,7 @@
    Options, every key required: :read-only?, true and Postgres refuses every
    write in it; :log, the caller's log, which the transaction handed to f
    carries (a nested call's, its own): work run-after-commit! keeps on it
-   that throws is written there. The work runs once COMMIT has returned and
+   that throws is written there; nil for a transaction that keeps none. The work runs once COMMIT has returned and
    the connection is back in the pool, never after a rollback."
   [pool-or-transaction options f]
   (settings/check-transaction-options options)
@@ -281,11 +280,16 @@
   "Keeps (f) to run after the transaction commits (run-in-transaction!'s,
    the outermost one a nested call joined), in the order given, on the
    same thread; never when it rolls back; one that throws is written to
-   the log of the run-in-transaction! it was kept under. Handed a pool, or a connection
+   the log of the run-in-transaction! it was kept under. One opened with
+   :log nil refuses, :cellar/transaction-without-log. Handed a pool, or a connection
    no transaction of run-in-transaction! holds, it refuses,
    :cellar/not-a-transaction: there is no commit to wait for. Returns nil."
   [transaction f]
-  (if-let [work (:cellar/after-commit transaction)]
-    (do (swap! work conj {:f f :log (:cellar/transaction-log transaction)}) nil)
-    (throw (ex-info "run-after-commit! takes a transaction run-in-transaction! made: a pool has no commit to wait for"
-                    {:type :cellar/not-a-transaction}))))
+  (let [work (:cellar/after-commit transaction)
+        log  (:cellar/transaction-log transaction)]
+    (cond
+      (nil? work) (throw (ex-info "run-after-commit! takes a transaction run-in-transaction! made: a pool has no commit to wait for"
+                                  {:type :cellar/not-a-transaction}))
+      (nil? log)  (throw (ex-info "run-after-commit! takes a transaction opened with a :log, where a failure is written: this one was opened with :log nil"
+                                  {:type :cellar/transaction-without-log}))
+      :else       (do (swap! work conj {:f f :log log}) nil))))

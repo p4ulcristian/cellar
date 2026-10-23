@@ -145,10 +145,12 @@
   "run-in-transaction!'s options, every key required. :read-only?: true,
    Postgres refuses every write in it. :log: the caller's log (a message's,
    with its request id), which the transaction carries: work
-   run-after-commit! keeps on it that throws is written there."
+   run-after-commit! keeps on it that throws is written there; or nil, for
+   a transaction that keeps no work (a library's own, never handed to app
+   code), which run-after-commit! refuses."
   [:map {:closed true}
    [:read-only? :boolean]
-   log-entry])
+   [:log [:maybe [fn? {:error/message "should be the caller's log function, (log level event data), made by logbook, or nil"}]]]])
 
 (def part-options-shape
   "run-instant-part!'s and run-slow-part!'s options: the time limits the
