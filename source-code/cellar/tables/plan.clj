@@ -190,9 +190,11 @@
           (recur (rest wanted) free found)))
       found)))
 
+(defn- reference-shape [fk] (select-keys fk [:columns :foreign-table :foreign-columns]))
+
 (def ^:private adopted-kinds
   ;; kind, its shape, and how Postgres renames it
-  [[:foreign-keys #(select-keys % [:columns :foreign-table :foreign-columns]) :constraint]
+  [[:foreign-keys reference-shape :constraint]
    [:uniques :columns :constraint]
    [:checks :condition :constraint]
    [:indexes #(when (:body %) [(:unique? %) (:body %)]) :index]])
@@ -547,6 +549,45 @@
                   (add-slow state (str "DROP INDEX CONCURRENTLY IF EXISTS " (names/qualify-index-name table-name n)) (str "index " n " is in no map"))))
               state (:indexes existing)))))
 
+(defn- find-references-no-map-names
+  "[table-name name], as Postgres has them now, of the references on the
+   maps' tables that no map names, nor adopts, once the pending changes
+   have run on paper: they go first, before the changes, so a table one
+   of them points at can be dropped."
+  [catalog desired pending]
+  (let [tagged   (into {} (for [[table-name table] catalog]
+                            [table-name (update table :foreign-keys
+                                                #(into {} (for [[n fk] %] [n (assoc fk :origin [table-name n])])))]))
+        on-paper (:catalog (reduce apply-change {:catalog tagged :instant [] :slow [] :stops []} pending))]
+    (for [[table-name {:keys [foreign-keys]}] on-paper
+          :when (contains? desired table-name)
+          :let [wanted  (get-in desired [table-name :foreign-keys])
+                adopted (set (map first (find-adoptions foreign-keys wanted reference-shape)))]
+          [n fk] foreign-keys
+          :when (not (or (contains? wanted n) (contains? adopted n)))]
+      (:origin fk))))
+
+(defn- drop-references-first
+  "The references no map names dropped before the changes run, on paper
+   and in the instant part's order."
+  [state references]
+  (reduce (fn [state [table-name n]]
+            (-> state
+                (update-in [:catalog table-name :foreign-keys] dissoc n)
+                (add-instant (str "ALTER TABLE " table-name " DROP CONSTRAINT " n) (str "reference " n " is in no map"))))
+          state
+          references))
+
+(defn list-folders-of-pending-changes
+  "The folders of the tables pending changes drop or rename away: read
+   with the maps' folders, so a table in a folder no map names any more
+   can still be dropped."
+  [changes changes-done]
+  (set (for [{:keys [id drop-table rename-table]} changes
+             :when (not (contains? changes-done id))
+             table-key (cond drop-table [drop-table] rename-table [(first rename-table)])]
+         (names/find-folder-of-table (names/turn-table-key-into-table-name table-key)))))
+
 (defn is-fresh?
   "Whether the database is fresh: no change has run and Postgres has none
    of the maps' tables. A fresh database takes the maps as they are."
@@ -576,7 +617,11 @@
         pending  (remove #(contains? changes-done (:id %)) changes)
         start    {:catalog catalog :instant [] :slow [] :stops [] :waiting-references []
                   :changes-to-mark (mapv :id pending)}
-        state    (if fresh? start (reduce apply-change start pending))
+        state    (if fresh?
+                   start
+                   (reduce apply-change
+                           (drop-references-first start (find-references-no-map-names catalog desired pending))
+                           pending))
         desired  (into {} (map (fn [[table-name table]]
                                  [table-name (if (contains? (:catalog state) table-name)
                                                (add-printed table (get printed table-name))

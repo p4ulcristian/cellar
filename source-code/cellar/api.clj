@@ -328,9 +328,10 @@
   [pool tables changes]
   (settings/check-tables tables)
   (let [desired      (desired/turn-table-maps-into-desired tables)
-        folders      (set (map names/find-folder-of-table (keys desired)))
-        catalog      (catalog/read-catalog pool folders)
         changes-done (set (map :change-done/id (find-changes-done-if-any pool)))
+        folders      (into (set (map names/find-folder-of-table (keys desired)))
+                           (plan/list-folders-of-pending-changes changes changes-done))
+        catalog      (catalog/read-catalog pool folders)
         {:keys [printed stops]} (probe/print-tables pool (plan/list-tables-to-print catalog desired changes changes-done))]
     (update (plan/make-plan {:catalog      catalog
                              :desired      desired

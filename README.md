@@ -195,7 +195,9 @@ arguments (`{:function "app.tell_change" :arguments ["order__id"]}`), called
 by statement triggers after each insert, update and delete, with the changed
 rows as `cellar_new_rows` and `cellar_old_rows`. cellar makes neither: the
 app, or a library on top, passes them in. cellar keeps the changes it has run
-in its own table, `cellar.changes_done`.
+in its own table, `cellar.changes_done`. A reference no map names is dropped before the
+changes run, so a table only it pointed at can be dropped in the same
+deploy ([why](decisions/2026-10-23-references-no-map-names-go-before-the-changes.md)).
 
 A reference writes out every key, a column's
 (`{:to :shop/id :on-delete :cascade :on-update :refuse :checked-at :statement}`)

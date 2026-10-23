@@ -283,3 +283,45 @@
               (is (= 2 (count sqls)))
               (is (str/starts-with? (first sqls) "DROP TRIGGER"))
               (is (not (str/includes? (second sqls) "WHEN"))))))))))
+
+(def ^:private roles
+  {:table      :legacy/roles
+   :columns    [[:role/id :uuid {:primary-key? true :default :random-uuid}]]
+   :indexes    []
+   :uniques    []
+   :references []
+   :triggers   []
+   :gates      nil
+   :on-change  nil})
+
+(defn- invitations-of [columns]
+  {:table      :invitations
+   :columns    columns
+   :indexes    []
+   :uniques    []
+   :references []
+   :triggers   []
+   :gates      nil
+   :on-change  nil})
+
+(deftest a-table-a-reference-no-map-names-points-at-can-be-dropped
+  (if-not port
+    (println "cellar.references-test: skipped, CELLAR_TEST_PORT is not set")
+    (with-empty-database
+      (fn [pool]
+        (run-sql! pool "DROP SCHEMA IF EXISTS legacy CASCADE")
+        (migrate-and-wait! pool [roles (invitations-of [[:invitation/id :uuid {:primary-key? true :default :random-uuid}]
+                                                        [:invitation/role-id :uuid {:optional? true :references (assoc refusing-reference :to :role/id)}]])])
+        (let [invitations (invitations-of [[:invitation/id :uuid {:primary-key? true :default :random-uuid}]
+                                           [:invitation/role-id :uuid {:optional? true}]])
+              changes     [{:id "d1" :drop-table :legacy/roles :why "roles moved to doorman"}]
+              {:keys [instant stops]} (cellar/make-plan-from-tables pool [invitations] changes)]
+          (testing "the map no longer names the reference: it goes before the table, in the check and in the statements"
+            (is (= [] stops))
+            (is (= ["ALTER TABLE invitations DROP CONSTRAINT invitations_invitation__role_id_fkey"
+                    "DROP TABLE legacy.roles"]
+                   (map :sql instant))))
+          @(:slow-part (cellar/migrate! pool [invitations] changes test-settings/migrate-options))
+          (is (= {:instant [] :slow [] :stops [] :changes-to-mark []}
+                 (select-keys (cellar/make-plan-from-tables pool [invitations] changes) [:instant :slow :stops :changes-to-mark])))
+          (is (= [] (find-rows pool "SELECT relname FROM pg_class WHERE relname = 'roles'"))))))))

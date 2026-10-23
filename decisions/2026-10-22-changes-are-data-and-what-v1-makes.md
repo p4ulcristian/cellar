@@ -1,5 +1,7 @@
 # Changes are data, and v1 makes tables, columns, references, enums and indexes
 
+> **Changed in part** by [The references no map names go before the changes](2026-10-23-references-no-map-names-go-before-the-changes.md) (2026-10-23, on tidy-up): a reference no map names is dropped before the changes are checked and run, so a table only it pointed at can be dropped.
+
 > **Changed in part** by [An index is a map with every key written out; unique plain columns are :uniques](2026-10-23-an-index-is-a-map-and-unique-columns-are-uniques.md) (2026-10-23, on tidy-up): an index is a map (columns or expressions with their order, method, operator classes, unique, condition), unique indexes are read and made, and a table's `:uniques` are unique keys over several columns.
 
 > **Changed in part** by [cellar adopts what the database already has](2026-10-23-cellar-adopts-what-the-database-has-by-asking-postgres.md) (2026-10-23, on tidy-up): every check is read, and a key, check or index Postgres has under another name, the same shape, is renamed to the map's; checks, indexes and defaults are compared as Postgres prints them.
