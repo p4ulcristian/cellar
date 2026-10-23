@@ -33,6 +33,7 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
 | `does-database-match-tables?` | whether the app can start: no instant part, stop or change left |
 | `grant-tables-to-role!` | let the app's own role, which owns nothing, use the tables through their gates |
 | `turn-table-into-row-shape` | a table's rows as a malli shape |
+| `turn-column-type-into-postgres-type` | a column's type as Postgres's: `[:string {:max 10}]` → `character varying(10)` |
 | `turn-key-into-column-name` `turn-table-key-into-table-name` `turn-table-name-into-table-key` | names: `:order/shop-id` ↔ `order__shop_id`, `:billing/invoices` ↔ `billing.invoices` |
 | `run-and-list-tables-read` | runs a function and returns what it returned with the tables its queries read, as Postgres's planner says; `{:log log}` first |
 | `start-listening!` `stop-listening!` `is-listening?` | `LISTEN` on a channel, notifications in batches, a reconnect said and counted; its batch window, waits and reconnect delay written out; whether its connection is listening now |
@@ -147,6 +148,25 @@ is refused, named, with every other problem at once, before anything runs
 values above are HikariCP's and PgJDBC's own defaults, written out; what
 stays fixed, and why, is in
 [the decision](decisions/2026-10-22-every-value-that-sets-behaviour-is-a-setting.md).
+A column's type is in malli's words, as
+[wire](https://github.com/p4ulcristian/wire) reads them, and states the limit
+Postgres holds, so the row shape `turn-table-into-row-shape` makes refuses
+what Postgres would
+([why](decisions/2026-10-23-a-columns-type-states-postgres-limit-in-malli-words.md)):
+
+| type | Postgres |
+|---|---|
+| `:string`, `[:string {:max 10}]` | `text`, `varchar(10)` |
+| `[:enum "a" "b"]`, `[:enum {:max 10} "a" "b"]` | `text`, `varchar(10)`, with a check |
+| `:int`, `[:int {:min -2147483648 :max 2147483647}]`, `[:int {:min -32768 :max 32767}]` | `bigint`, `integer`, `smallint` |
+| `:decimal`, `[:decimal {:precision 10 :scale 2}]` | `numeric`, `numeric(10,2)` |
+| `:uuid` `:double` `:boolean` `:time/instant` `:time/local-date` | `uuid` `double precision` `boolean` `timestamptz` `date` |
+| `[:vector t]`, t one of the above but an enum | `t[]` |
+| `[:json shape]` | `jsonb` |
+
+Any other type, or other properties, is refused (`:cellar/unknown-type`),
+and a type Postgres has otherwise is a stop.
+
 A column is the exception: it says only the options it has, since an unsaid
 one is the safe answer
 ([why](decisions/2026-10-22-a-column-says-only-the-options-it-has.md));

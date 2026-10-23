@@ -62,8 +62,13 @@
    only the options it has; an unsaid one is no or none, the safe side
    (NOT NULL, not unique, not a primary key, no default, no reference), and
    an unknown one is refused. The type is in malli's words, as wire
-   (github.com/p4ulcristian/wire) reads them (:uuid :int :decimal :double
-   :string :boolean :time/instant :time/local-date [:enum …]); it is NOT
+   (github.com/p4ulcristian/wire) reads them, and states the limit Postgres
+   holds: :uuid :double :boolean :time/instant :time/local-date; :string
+   or [:string {:max 10}] (text, varchar(10)); [:enum \"a\" …] or [:enum
+   {:max 10} \"a\" …]; :int (bigint), [:int {:min -2147483648 :max
+   2147483647}] (integer) or [:int {:min -32768 :max 32767}] (smallint);
+   :decimal or [:decimal {:precision 10 :scale 2}]; [:vector t], an array
+   of one of those but an enum; [:json shape] (jsonb). It is NOT
    NULL unless {:optional? true}; {:unique? true} makes a unique key;
    {:primary-key? true} puts it in the primary key; :default is
    :random-uuid, :now, a number, true/false or text; :references points at
@@ -129,7 +134,8 @@
    [cellar.tables.desired :as desired]
    [cellar.tables.names :as names]
    [cellar.tables.plan :as plan]
-   [cellar.tables.probe :as probe]))
+   [cellar.tables.probe :as probe]
+   [cellar.tables.types :as types]))
 
 ;; -----------------------------------------------------------------------------
 ;; Queries
@@ -423,6 +429,15 @@
   [table]
   (settings/check-tables [table])
   (desired/turn-table-into-row-shape table))
+
+(defn turn-column-type-into-postgres-type
+  "A column's type, in the words a table map says it, as Postgres's type,
+   as format_type names it: [:string {:max 10}] -> \"character
+   varying(10)\", [:json shape] -> \"jsonb\"; an enum is its text type. For
+   a library writing SQL over a map's columns (a function's variables).
+   A type cellar has no word for throws :cellar/unknown-type."
+  [type]
+  (types/turn-type-into-postgres-type type))
 
 (defn turn-key-into-column-name
   "A column key's Postgres name: :order/shop-id -> \"order__shop_id\"."

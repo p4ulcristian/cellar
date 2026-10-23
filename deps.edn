@@ -21,6 +21,9 @@
  :aliases
  {;; the tests:  clojure -X:test  (the Postgres ones need CELLAR_TEST_PORT, see README.md)
   :test {:extra-paths ["test-code"]
-         :extra-deps  {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+         :extra-deps  {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                       ;; the row shapes cellar makes, read by the edge that checks them
+                       io.github.p4ulcristian/wire          {:git/url "https://github.com/p4ulcristian/wire"
+                                                            :git/sha "900a84d84d4d8e85967508c55ec0955755887aa7"}}
          :exec-fn     cognitect.test-runner.api/test
          :exec-args   {:dirs ["test-code"]}}}}

@@ -1,0 +1,117 @@
+(ns cellar.types-test
+  "A column's type states Postgres's limit in malli's words. The Postgres
+   tests run when CELLAR_TEST_PORT is set; each starts from an empty
+   database."
+  (:require
+   [clojure.test :refer [deftest is testing]]
+   [cellar.api :as cellar]
+   [cellar.test-settings :as test-settings]
+   [wire.api :as wire]))
+
+(def ^:private port test-settings/port)
+
+(defn- run-sql! [pool text]
+  (cellar/run-statement! pool (cellar/make-query-from-sql-text "test" text) {}))
+
+(defn- find-rows [pool text params]
+  (cellar/find-rows pool (cellar/make-query-from-sql-text "test" text) params))
+
+(defn- with-empty-database [f]
+  (let [pool (test-settings/start-pool! 4 10000)]
+    (try
+      (run-sql! pool "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; DROP SCHEMA IF EXISTS cellar CASCADE")
+      (f pool)
+      (finally (cellar/stop-pool! pool)))))
+
+(defn- plan-of [pool tables]
+  (select-keys (cellar/make-plan-from-tables pool tables []) [:instant :slow :stops :changes-to-mark]))
+
+(def ^:private nothing-to-do {:instant [] :slow [] :stops [] :changes-to-mark []})
+
+(def ^:private jobs
+  {:table      :jobs
+   :columns    [[:job/id       :uuid {:primary-key? true :default :random-uuid}]
+                [:job/status   [:enum {:max 10} "queued" "running" "done"] {:default "queued"}]
+                [:job/kind     [:string {:max 10}]]
+                [:job/height   [:int {:min -2147483648 :max 2147483647}]]
+                [:job/year     [:int {:min -32768 :max 32767}] {:optional? true}]
+                [:job/min-qty  [:decimal {:precision 10 :scale 2}]]
+                [:job/flags    [:vector [:string {:max 64}]]]
+                [:job/counts   [:vector :int]]
+                [:job/slots    [:json [:vector [:map [:slot/day :time/local-date]]]]]]
+   :indexes    []
+   :uniques    []
+   :references []
+   :triggers   []
+   :gates      nil
+   :on-change  nil})
+
+(deftest each-type-is-the-postgres-type-it-names
+  (let [refusal (fn [type] (:type (ex-data (try (cellar/make-plan-from-tables nil [(assoc-in jobs [:columns 2 1] type)] [])
+                                                (catch Exception e e)))))]
+    (doseq [type [[:string {:min 1}] [:int {:min 0}] [:int {:min 0 :max 10}] [:decimal {:precision 10}]
+                  [:decimal {:precision 2 :scale 3}] [:enum {:max 2} "abc"] [:vector [:enum "a"]] [:vector [:json :any]]
+                  [:json :any :any] :keyword [:map [:a :int]]]]
+      (is (= :cellar/unknown-type (refusal type)) (pr-str type))))
+  (if-not port
+    (println "cellar.types-test: skipped, CELLAR_TEST_PORT is not set")
+    (with-empty-database
+      (fn [pool]
+        @(:slow-part (cellar/migrate! pool [jobs] [] test-settings/migrate-options))
+        (is (= nothing-to-do (plan-of pool [jobs])))
+        (is (= [["job__id" "uuid"] ["job__status" "character varying(10)"] ["job__kind" "character varying(10)"]
+                ["job__height" "integer"] ["job__year" "smallint"] ["job__min_qty" "numeric(10,2)"]
+                ["job__flags" "character varying(64)[]"] ["job__counts" "bigint[]"] ["job__slots" "jsonb"]]
+               (map (juxt :column/name :column/type)
+                    (find-rows pool (str "SELECT attname::text AS column__name, format_type(atttypid, atttypmod) AS column__type "
+                                         "FROM pg_attribute WHERE attrelid = 'jobs'::regclass AND attnum > 0 ORDER BY attnum")
+                               {}))))
+        (testing "a value of each type goes in and comes back"
+          (run-sql! pool (str "INSERT INTO jobs (job__kind, job__height, job__year, job__min_qty, job__flags, job__counts, job__slots) "
+                              "VALUES ('coat', 2147483647, -32768, 12345678.99, '{rush,\"big one\"}', '{1,9007199254740993}', "
+                              "'[{\"slot__day\": \"2026-11-15\"}]')"))
+          (is (= [{:job/status "queued" :job/kind "coat" :job/height 2147483647 :job/year -32768 :job/min-qty 12345678.99M
+                   :job/flags ["rush" "big one"] :job/counts [1 9007199254740993] :job/slots [{:slot/day "2026-11-15"}]}]
+                 (find-rows pool (str "SELECT job__status, job__kind, job__height, job__year, job__min_qty, job__flags, job__counts, job__slots "
+                                      "FROM jobs") {}))))
+        (testing "Postgres holds the limits the types state"
+          (is (thrown? Exception (run-sql! pool "UPDATE jobs SET job__kind = 'longer than ten'")))
+          (is (thrown? Exception (run-sql! pool "UPDATE jobs SET job__height = 2147483648")))
+          (is (thrown? Exception (run-sql! pool "UPDATE jobs SET job__min_qty = 123456789")))
+          (is (thrown? Exception (run-sql! pool "UPDATE jobs SET job__status = 'lost'"))))))))
+
+(deftest columns-another-tool-made-are-taken-as-they-are
+  (if-not port
+    (println "cellar.types-test: skipped, CELLAR_TEST_PORT is not set")
+    (with-empty-database
+      (fn [pool]
+        (run-sql! pool (str "CREATE TABLE jobs (job__id uuid PRIMARY KEY DEFAULT gen_random_uuid(),"
+                            " job__status VARCHAR(10) NOT NULL DEFAULT 'queued' CONSTRAINT jobs_status_check CHECK (job__status IN ('queued', 'running', 'done')),"
+                            " job__kind VARCHAR(10) NOT NULL, job__height INTEGER NOT NULL, job__year SMALLINT,"
+                            " job__min_qty DECIMAL(10,2) NOT NULL, job__flags varchar(64)[] NOT NULL, job__counts bigint[] NOT NULL,"
+                            " job__slots jsonb NOT NULL)"))
+        (is (= {:instant ["ALTER TABLE jobs RENAME CONSTRAINT jobs_status_check TO jobs_job__status_enum"] :slow [] :stops []}
+               (update (select-keys (plan-of pool [jobs]) [:instant :slow :stops]) :instant #(map :sql %)))
+            "no type changes, the varchar enum's check adopted")))))
+
+(def ^:private test-wire
+  (wire/make-wire-from-settings
+   {:most-shapes-kept 1000
+    :json-limits      {:max-nesting-depth 1000 :max-number-length 1000 :max-string-length 20000000
+                       :max-name-length 50000 :max-document-length nil :max-token-count nil
+                       :max-writing-nesting-depth 1000}}))
+
+(deftest the-row-shape-refuses-what-postgres-would
+  (let [row-shape (cellar/turn-table-into-row-shape jobs)
+        row       {:job/id "7f3c1e2a-0000-4000-8000-000000000001" :job/status "queued" :job/kind "coat"
+                   :job/height 1 :job/min-qty "12.30" :job/flags ["rush"] :job/counts [1]
+                   :job/slots [{:slot/day "2026-11-15"}]}
+        way-in    #(wire/turn-json-data-into-shaped-data-or-errors test-wire row-shape %)]
+    (is (contains? (way-in row) :shaped-data))
+    (is (= {:job/kind ["should be at most 10 characters"]
+            :job/height ["should be between -2147483648 and 2147483647"]
+            :job/min-qty ["should be a decimal with at most 8 digits before the point and 2 after"]
+            :job/flags [["should be at most 64 characters"]]
+            :job/slots [{:slot/day ["should be a day, like 2026-11-15"]}]}
+           (:errors (way-in (assoc row :job/kind "longer than ten" :job/height 2147483648 :job/min-qty "12.345"
+                                   :job/flags [(apply str (repeat 65 "x"))] :job/slots [{:slot/day "soon"}])))))))

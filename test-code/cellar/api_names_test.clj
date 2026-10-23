@@ -12,6 +12,6 @@
            find-rows find-one-row run-statement! run-in-transaction! is-transaction?
            make-plan-from-tables run-instant-part! run-slow-part! migrate!
            does-database-match-tables? turn-table-into-row-shape
-           turn-key-into-column-name turn-table-key-into-table-name
+           turn-key-into-column-name turn-table-key-into-table-name turn-column-type-into-postgres-type
            grant-tables-to-role!}
          (set (keys (ns-publics 'cellar.api))))))
