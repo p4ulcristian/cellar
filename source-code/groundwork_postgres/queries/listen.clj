@@ -1,0 +1,90 @@
+(ns groundwork-postgres.queries.listen
+  "Hearing Postgres's NOTIFY: one connection of the pool held open with
+   LISTEN, read on a virtual thread. Notifications that arrive close
+   together (within :batch-window-ms) are handed on as one batch. When the
+   connection breaks, the thread waits :reconnect-after-ms, opens another,
+   LISTENs again and calls on-reconnect: whatever was sent in between was
+   missed. A break, and a failure of either function the app hands in, is
+   written to the options' :log; each time it listens again after a break
+   is counted on the options' :meter."
+  (:require
+   [groundwork-postgres.queries.metrics :as metrics]
+   [groundwork-postgres.queries.postgres :as sql]
+   [groundwork-postgres.settings :as settings])
+  (:import
+   (java.sql Connection)
+   (org.postgresql PGConnection PGNotification)))
+
+(defn- read-batch [^PGConnection connection {:keys [batch-window-ms check-stopped-every-ms]}]
+  (when-let [first-ones (seq (.getNotifications connection (int check-stopped-every-ms)))]
+    (when (pos? batch-window-ms) (Thread/sleep (long batch-window-ms)))
+    ;; without a wait: what has arrived by now
+    (for [^PGNotification notification (concat first-ones (.getNotifications connection))]
+      {:channel (.getName notification) :payload (.getParameter notification)})))
+
+(defn- hand-on! [{:keys [log]} channel f & arguments]
+  (try (apply f arguments)
+       (catch Exception e
+         (log :error :groundwork-postgres/listener-function-failed {:groundwork-postgres/channel channel :error e}))))
+
+(defn- listen-on-one-connection! [pool channel running? listening? again? {:keys [on-notifications on-reconnect] :as options}]
+  (sql/call-with-connection
+   pool
+   (fn [^Connection connection]
+     ;; NOTIFY is delivered outside a transaction only
+     (.setAutoCommit connection true)
+     (with-open [statement (.createStatement connection)]
+       (.execute statement (str "LISTEN " channel)))
+     (reset! listening? true)
+     ;; told only once listening again, so nothing falls between
+     (when again?
+       (metrics/count-reconnect! (:meter options))
+       (hand-on! options channel on-reconnect))
+     (let [pg (.unwrap connection PGConnection)]
+       (while @running?
+         (when-let [batch (seq (read-batch pg options))]
+           (hand-on! options channel on-notifications (vec batch))))))))
+
+(defn start-listening!
+  "LISTENs on a channel (a plain Postgres name), as the options say
+   (groundwork-postgres.settings/listening-options-shape, every key required, checked
+   first). Holds one connection of the pool for as long as it runs."
+  [pool channel options]
+  (settings/check-listening-options options)
+  (when-not (re-matches #"[a-z_][a-z0-9_]*" channel)
+    (throw (ex-info (str "Not a channel name: " channel) {:type :groundwork-postgres/bad-channel :channel channel})))
+  (metrics/declare-listening-metrics! (:meter options))
+  (let [{:keys [log reconnect-after-ms stop-wait-ms]} options
+        running?   (atom true)
+        listening? (atom false)
+        thread     (Thread/startVirtualThread
+                    (fn []
+                      (loop [again? false]
+                        (when @running?
+                          (try (listen-on-one-connection! pool channel running? listening? again? options)
+                               (catch Exception e
+                                 (reset! listening? false)
+                                 (when @running?
+                                   (log :warn :groundwork-postgres/listening-broke {:groundwork-postgres/channel            channel
+                                                                       :groundwork-postgres/reconnect-after-ms reconnect-after-ms
+                                                                       :error                     e})
+                                   (Thread/sleep (long reconnect-after-ms)))))
+                          (recur true)))
+                      (reset! listening? false)))]
+    {:running? running? :listening? listening? :thread thread :stop-wait-ms stop-wait-ms}))
+
+(defn is-listening?
+  "Whether the listener's connection is LISTENing now: false before it
+   first is, while it is broken and waits to connect again, and once
+   stopped."
+  [{:keys [listening?]}]
+  @listening?)
+
+(defn stop-listening!
+  "Stops listening: the thread ends within :check-stopped-every-ms (and the
+   batch it is handing on), and its connection goes back to the pool.
+   Waits at most :stop-wait-ms; returns whether the thread had ended."
+  [{:keys [running? ^Thread thread stop-wait-ms]}]
+  (reset! running? false)
+  (when (pos? stop-wait-ms) (.join thread (long stop-wait-ms)))
+  (not (.isAlive thread)))

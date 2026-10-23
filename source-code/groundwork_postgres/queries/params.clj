@@ -1,0 +1,128 @@
+(ns groundwork-postgres.queries.params
+  "A .sql file's text with :name params turned into what JDBC sends: the
+   text with ? in their place, and the param names in order; and the text
+   with $1, $2… in their place, for asking Postgres to plan it.
+
+     SELECT order__id FROM orders WHERE order__shop_id = :order/shop-id LIMIT :limit
+     => {:text-with-question-marks \"SELECT order__id FROM orders WHERE order__shop_id = ? LIMIT ?\"
+         :text-with-dollar-numbers \"SELECT order__id FROM orders WHERE order__shop_id = $1 LIMIT $2\"
+         :param-names              [:order/shop-id :limit]}
+
+   A field of the data is namespaced (:post/title); a control of the query
+   is plain (:limit).
+
+   - A name used twice is two ?s, with its value bound twice.
+   - A ? that isn't a param (the jsonb operators ?, ?|, ?&) becomes ??,
+     which JDBC sends as ?.
+   - A colon right after a letter, digit or _ is not a param, so array
+     slices like arr[1:n] stay as they are.
+   - Left untouched: string literals (also E'..'), quoted identifiers,
+     -- and /* */ comments (nested), dollar-quoted bodies, ::casts.
+   - Positional $1 throws: params are named.")
+
+(def ^:private param-name
+  #"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:/[a-z][a-z0-9]*(?:-[a-z0-9]+)*)?")
+(def ^:private dollar-tag #"^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+
+(defn- ident-char? [c]
+  (and c (or (Character/isLetterOrDigit (char c)) (= c \_) (= c \$))))
+
+(defn- syntax-error [message text i]
+  (throw (ex-info message {:type :groundwork-postgres/syntax :position i :near (subs text i (min (count text) (+ i 30)))})))
+
+(defn- quoted-end
+  "Index just past the quoted text opening at i. A doubled quote stays
+   inside; with backslash? a backslash escapes the next character."
+  [^String text i backslash?]
+  (let [n (count text)
+        q (.charAt text i)]
+    (loop [j (inc i)]
+      (cond
+        (>= j n)                                 n
+        (and backslash? (= \\ (.charAt text j))) (recur (+ j 2))
+        (not= q (.charAt text j))                (recur (inc j))
+        (and (< (inc j) n) (= q (.charAt text (inc j)))) (recur (+ j 2))
+        :else                                    (inc j)))))
+
+(defn- block-comment-end [^String text i]
+  (let [n (count text)]
+    (loop [j (+ i 2), depth 1]
+      (cond
+        (>= j n)                    n
+        (.startsWith text "/*" (int j)) (recur (+ j 2) (inc depth))
+        (.startsWith text "*/" (int j)) (if (= 1 depth) (+ j 2) (recur (+ j 2) (dec depth)))
+        :else                       (recur (inc j) depth)))))
+
+(defn- line-end [^String text i]
+  (let [j (.indexOf text "\n" (int i))]
+    (if (neg? j) (count text) j)))
+
+(defn- escape-string? [^String text i]
+  (and (pos? i)
+       (#{\E \e} (.charAt text (dec i)))
+       (not (and (> i 1) (ident-char? (.charAt text (- i 2)))))))
+
+(defn turn-sql-text-into-statement
+  "SQL text -> {:text-with-question-marks … :text-with-dollar-numbers …
+   :param-names [one per ?, in order]}."
+  [^String text]
+  (let [n        (count text)
+        out      (StringBuilder.)
+        numbered (StringBuilder.)
+        at       (fn [i] (when (< i n) (.charAt text i)))]
+    (loop [i 0, params []]
+      (if (>= i n)
+        {:text-with-question-marks (str out) :text-with-dollar-numbers (str numbered) :param-names params}
+        (let [c    (.charAt text i)
+              nxt  (at (inc i))
+              prev (when (pos? i) (.charAt text (dec i)))
+              copy (fn [j] (.append out text (int i) (int j)) (.append numbered text (int i) (int j)) j)]
+          (cond
+            (= c \')
+            (recur (copy (quoted-end text i (escape-string? text i))) params)
+
+            (= c \")
+            (recur (copy (quoted-end text i false)) params)
+
+            (and (= c \-) (= nxt \-))
+            (recur (copy (line-end text i)) params)
+
+            (and (= c \/) (= nxt \*))
+            (recur (copy (block-comment-end text i)) params)
+
+            (and (= c \$) (not (ident-char? prev)))
+            (if-let [tag (re-find dollar-tag (subs text i (min n (+ i 64))))]
+              (let [close (.indexOf text ^String tag (int (+ i (count tag))))]
+                (recur (copy (if (neg? close) n (+ close (count tag)))) params))
+              (if (and nxt (Character/isDigit (char nxt)))
+                (syntax-error "Positional params ($1) aren't allowed, use :name" text i)
+                (recur (copy (inc i)) params)))
+
+            (= c \?)
+            (do (.append out "??")
+                (.append numbered "?")
+                (recur (inc i) params))
+
+            (and (= c \:) (= nxt \:))
+            (recur (copy (+ i 2)) params)
+
+            (and (= c \:) (not (ident-char? prev)))
+            (if-let [pname (re-find param-name (subs text (inc i)))]
+              (do (.append out "?")
+                  (.append numbered (str "$" (inc (count params))))
+                  (recur (+ i 1 (count pname)) (conj params (keyword pname))))
+              (recur (copy (inc i)) params))
+
+            :else
+            (recur (copy (inc i)) params)))))))
+
+(defn list-param-values
+  "The values for a statement, one per ?, from a params map. A param missing
+   from the map throws, naming the file; nil is sent as NULL."
+  [{:keys [param-names]} params path]
+  (mapv (fn [k]
+          (if (contains? params k)
+            (get params k)
+            (throw (ex-info (str "Missing param " k " for " path)
+                            {:type :groundwork-postgres/missing-param :param k :file path}))))
+        param-names))

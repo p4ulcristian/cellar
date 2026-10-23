@@ -1,22 +1,22 @@
-# cellar
+# groundwork-postgres
 
 Postgres from Clojure, in two halves. **Queries:** every query is a `.sql`
 file; a param is `:name`, a column `entity__field` comes back as
 `:entity/field`, with real types (UUID, BigDecimal, java.time).
-**Tables:** declared as Clojure maps; cellar compares them with Postgres and
+**Tables:** declared as Clojure maps; groundwork-postgres compares them with Postgres and
 plans what differs, in two parts (instant, before the app starts; slow, after
 it, in the background). A difference that could lose data stops with a
 message and runs nothing; what a map can't say (a rename, a drop, a backfill)
 is a change, given as data and run once.
 
 ```clojure
-io.github.p4ulcristian/cellar {:git/tag "v0.4.6" :git/sha "4396e6b"}
+io.github.p4ulcristian/groundwork-postgres {:git/tag "v0.4.6" :git/sha "4396e6b"}
 ```
 
 Needs only next.jdbc, PgJDBC, HikariCP (with slf4j-jdk14), jsonista, malli,
-[meter](https://github.com/p4ulcristian/meter) (the app's metrics, handed in)
-and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). One public namespace,
-`cellar.api`; its parts are `cellar.queries.*` and `cellar.tables.*`.
+[groundwork-metrics](https://github.com/p4ulcristian/groundwork-metrics) (the app's metrics, handed in)
+and [groundwork-settings](https://github.com/p4ulcristian/groundwork-settings) (the password is its secret). One public namespace,
+`groundwork-postgres.api`; its parts are `groundwork-postgres.queries.*` and `groundwork-postgres.tables.*`.
 
 ## The api
 
@@ -40,10 +40,10 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
 | `start-listening!` `stop-listening!` `is-listening?` | `LISTEN` on a channel, notifications in batches, a reconnect said and counted; its batch window, waits and reconnect delay written out; whether its connection is listening now |
 
 ```clojure
-(require '[cellar.api :as cellar])
+(require '[groundwork-postgres.api :as postgres])
 
-(def pool (cellar/start-pool! {:host "localhost" :port 5432 :database "shop" :user "shop"
-                               :password password  ; safe's secret, #secret :cellar/password; nil for none
+(def pool (postgres/start-pool! {:host "localhost" :port 5432 :database "shop" :user "shop"
+                               :password password  ; groundwork-settings's secret, #secret :groundwork-postgres/password; nil for none
                                :tls :off :tls-root-cert nil
                                :pool-size 10
                                :connection-wait-ms 30000 :connection-check-wait-ms 5000
@@ -110,7 +110,7 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
 
 ;; beside the tables, every key written out: the extensions, the functions (a .sql file each, one
 ;; CREATE OR REPLACE FUNCTION, or {:name :sql} a library made) and the views (one CREATE VIEW each, in order)
-(cellar/migrate! pool {:tables     [shops orders partner-payouts]
+(postgres/migrate! pool {:tables     [shops orders partner-payouts]
                        :extensions ["pg_trgm"]                          ; the gin index's gin_trgm_ops
                        :functions  ["app/db/next_order_number.sql"]
                        :views      ["app/db/shop_totals.sql"]}
@@ -122,8 +122,8 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
 
 ;; app/orders/find_orders_of_shop.sql:
 ;;   SELECT order__id, order__total FROM orders WHERE order__shop_id = :order/shop-id
-(def find-orders-of-shop (cellar/make-query-from-sql-file "app/orders/find_orders_of_shop.sql"))
-(cellar/find-rows pool find-orders-of-shop {:order/shop-id shop-id})
+(def find-orders-of-shop (postgres/make-query-from-sql-file "app/orders/find_orders_of_shop.sql"))
+(postgres/find-rows pool find-orders-of-shop {:order/shop-id shop-id})
 ;=> [#:order{:id #uuid "1d000000-…" :total 120.50M}]
 ```
 
@@ -150,9 +150,9 @@ every key written out, `[]` for none
 ([why](decisions/2026-10-23-checks-functions-views-and-extensions-are-declared-like-tables.md)).
 A function may also be one a library makes from data, its name as its
 SQL writes it and its one `CREATE OR REPLACE FUNCTION`:
-`{:name "doorman.denied_ab12" :sql "CREATE OR REPLACE FUNCTION doorman.denied_ab12() …"}`,
+`{:name "groundwork_access.denied_ab12" :sql "CREATE OR REPLACE FUNCTION groundwork_access.denied_ab12() …"}`,
 compared, made and dropped exactly like a file's; one whose SQL makes
-another name is refused, `:cellar/bad-function`
+another name is refused, `:groundwork-postgres/bad-function`
 ([why](decisions/2026-10-23-functions-may-be-sql-text-a-library-makes.md)).
 They are compared as Postgres prints them and made in the order
 extensions, functions, tables, views, all in the instant part: a function
@@ -181,7 +181,7 @@ with its words
 
 Every setting, option and table key is required: a missing or unknown one
 is refused, named, with every other problem at once, before anything runs
-(`:cellar/bad-settings`, `:cellar/bad-options`, `:cellar/bad-tables`). The
+(`:groundwork-postgres/bad-settings`, `:groundwork-postgres/bad-options`, `:groundwork-postgres/bad-tables`). The
 values above are HikariCP's and PgJDBC's own defaults, written out; what
 stays fixed, and why, is in
 [the decision](decisions/2026-10-22-every-value-that-sets-behaviour-is-a-setting.md).
@@ -191,7 +191,7 @@ one is the safe answer
 an unknown option is still refused.
 
 A column's type is in malli's words, as
-[wire](https://github.com/p4ulcristian/wire) reads them, and states the limit
+[groundwork-shaped-json](https://github.com/p4ulcristian/groundwork-shaped-json) reads them, and states the limit
 Postgres holds, so the row shape `turn-table-into-row-shape` makes refuses
 what Postgres would
 ([why](decisions/2026-10-23-a-columns-type-states-postgres-limit-in-malli-words.md)):
@@ -206,7 +206,7 @@ what Postgres would
 | `[:vector t]`, t one of the above but an enum | `t[]` |
 | `[:json shape]` | `jsonb` |
 
-Any other type, or other properties, is refused (`:cellar/unknown-type`),
+Any other type, or other properties, is refused (`:groundwork-postgres/unknown-type`),
 and a type Postgres has otherwise is a stop, until a change moves it:
 `{:id "…" :change-column-type :shop/currency :from "character(3)"}`, `:from`
 what Postgres has (else a stop, named). The plan compares the column as if
@@ -219,38 +219,38 @@ done after it there; a declared view that reads the column is a stop
 or `[]`/`{}` (empty JSON on a `:json` column; `[]` an empty array on a
 `:vector` one).
 
-cellar writes no line itself: `start-pool!`, `migrate!`, `start-listening!`
+groundwork-postgres writes no line itself: `start-pool!`, `migrate!`, `start-listening!`
 and `run-and-list-tables-read` take the app's log function,
-`(log level event data)` as [logbook](https://github.com/p4ulcristian/logbook)
-makes it, under `:log` (`:cellar/planned`, `:cellar/listening-broke`,
-`:cellar/listener-function-failed`, `:cellar/tables-read-unknown`, and
-`:cellar/after-commit-failed`, to the `:log` `run-in-transaction!` was
+`(log level event data)` as [groundwork-logs](https://github.com/p4ulcristian/groundwork-logs)
+makes it, under `:log` (`:groundwork-postgres/planned`, `:groundwork-postgres/listening-broke`,
+`:groundwork-postgres/listener-function-failed`, `:groundwork-postgres/tables-read-unknown`, and
+`:groundwork-postgres/after-commit-failed`, to the `:log` `run-in-transaction!` was
 given (the caller's, a message's with its request id), for work
 `run-after-commit!` kept that threw;
 [why](decisions/2026-10-22-the-app-passes-its-log.md)). HikariCP's and
 PgJDBC's own lines about a pool (its start and stop, a leak warning, a
 connection that failed), info and up, go to the log `start-pool!` was given,
-as `:cellar/pool-said` with the pool's name, the logger's and the message;
+as `:groundwork-postgres/pool-said` with the pool's name, the logger's and the message;
 each pool's to its own, so two pools, or two apps, in one JVM don't hear
-each other's. cellar brings slf4j-jdk14 for it: the app adds no SLF4J
+each other's. groundwork-postgres brings slf4j-jdk14 for it: the app adds no SLF4J
 backend, and one of its own takes HikariCP's lines away from the log, which
-`:cellar/pool-lines-elsewhere` says
+`:groundwork-postgres/pool-lines-elsewhere` says
 ([how](decisions/2026-10-23-the-drivers-lines-go-to-the-pools-log.md)).
 
 `start-pool!` and `start-listening!` take the app's meter, as
-[meter](https://github.com/p4ulcristian/meter) makes it, under `:meter`,
-and declare cellar's metrics on it
+[groundwork-metrics](https://github.com/p4ulcristian/groundwork-metrics) makes it, under `:meter`,
+and declare groundwork-postgres's metrics on it
 ([why](decisions/2026-10-23-the-pool-and-every-query-are-counted-on-the-apps-meter.md)):
 
 | metric | type | what |
 |---|---|---|
-| `cellar_pool_connections{state}` | gauge, read | `active`, `idle` |
-| `cellar_pool_waiting_threads` | gauge, read | threads waiting for a connection |
-| `cellar_connection_acquire_seconds` | histogram | the wait for a connection |
-| `cellar_connection_usage_seconds` | histogram | how long one was held |
-| `cellar_connection_timeouts_total` | counter | waits past `:connection-wait-ms` |
-| `cellar_query_seconds{query}` | histogram | every query run, by its name, failed or not |
-| `cellar_listening_reconnects_total` | counter | a listener listening again after a break |
+| `groundwork_postgres_pool_connections{state}` | gauge, read | `active`, `idle` |
+| `groundwork_postgres_pool_waiting_threads` | gauge, read | threads waiting for a connection |
+| `groundwork_postgres_connection_acquire_seconds` | histogram | the wait for a connection |
+| `groundwork_postgres_connection_usage_seconds` | histogram | how long one was held |
+| `groundwork_postgres_connection_timeouts_total` | counter | waits past `:connection-wait-ms` |
+| `groundwork_postgres_query_seconds{query}` | histogram | every query run, by its name, failed or not |
+| `groundwork_postgres_listening_reconnects_total` | counter | a listener listening again after a break |
 
 A query's name is its file's path (or the name `make-query-from-sql-text`
 was given); every query made is noted, and `start-pool!` declares those
@@ -263,9 +263,9 @@ A table map's `:gates`, nil or SQL conditions for all four operations
 security, and its `:on-change`, nil or the name of a Postgres function and its
 arguments (`{:function "app.tell_change" :arguments ["order__id"]}`), called
 by statement triggers after each insert, update and delete, with the changed
-rows as `cellar_new_rows` and `cellar_old_rows`. cellar makes neither: the
-app, or a library on top, passes them in. cellar keeps the changes it has run
-in its own table, `cellar.changes_done`. A reference no map names is dropped before the
+rows as `groundwork_postgres_new_rows` and `groundwork_postgres_old_rows`. groundwork-postgres makes neither: the
+app, or a library on top, passes them in. groundwork-postgres keeps the changes it has run
+in its own table, `groundwork_postgres.changes_done`. A reference no map names is dropped before the
 changes run, so a table only it pointed at can be dropped in the same
 deploy ([why](decisions/2026-10-23-references-no-map-names-go-before-the-changes.md)).
 
@@ -276,7 +276,7 @@ is deleted, or its columns changed, with the other row's, by Postgres, past
 the gates), `:set-null` (only on `:optional?` columns), `:refuse` (NO
 ACTION: refused while a row points at it) or `:restrict` (refused at once,
 even checked at commit); `:checked-at` is `:statement` or `:commit`
-(DEFERRABLE INITIALLY DEFERRED). cellar reads all three from Postgres: a
+(DEFERRABLE INITIALLY DEFERRED). groundwork-postgres reads all three from Postgres: a
 key that acts otherwise is made again (NOT VALID, then proven in the slow
 part); one checked otherwise is changed in place
 ([why](decisions/2026-10-23-a-reference-writes-out-what-it-does-on-delete-update-and-when-checked.md)).
@@ -287,7 +287,7 @@ none (a one-column one is the column's `:references`):
 get a unique key together.
 Its `:triggers`, `[]` for none, are triggers a library on top (or the app)
 declares, calling a function it makes:
-`{:function "doorman.fill_1a2b3c4d" :arguments [] :timing :before :events #{:insert :update} :update-of [:job/order-id] :for-each :row :when nil}`,
+`{:function "groundwork_access.fill_1a2b3c4d" :arguments [] :timing :before :events #{:insert :update} :update-of [:job/order-id] :for-each :row :when nil}`,
 `:when` nil to call it always, or a condition
 (`"OLD.package__workspace_id IS DISTINCT FROM NEW.package__workspace_id"`;
 [why](decisions/2026-10-23-a-trigger-says-when-it-is-called.md));
@@ -300,11 +300,11 @@ like the change triggers, one no map names is dropped
 clojure -X:test     # the Postgres tests are skipped without a database
 
 # with a throwaway Postgres:
-echo cellar-test-password > /tmp/cellar-pg-password
-initdb -D /tmp/cellar-pg -A scram-sha-256 --pwfile=/tmp/cellar-pg-password -U "$USER"
-pg_ctl -D /tmp/cellar-pg -o "-p 5499 -k /tmp -c listen_addresses=localhost" -l /tmp/cellar-pg.log start
-CELLAR_TEST_PORT=5499 CELLAR_TEST_USER=$USER CELLAR_TEST_PASSWORD=cellar-test-password clojure -X:test
-pg_ctl -D /tmp/cellar-pg stop
+echo groundwork-postgres-test-password > /tmp/postgres-pg-password
+initdb -D /tmp/postgres-pg -A scram-sha-256 --pwfile=/tmp/postgres-pg-password -U "$USER"
+pg_ctl -D /tmp/postgres-pg -o "-p 5499 -k /tmp -c listen_addresses=localhost" -l /tmp/postgres-pg.log start
+POSTGRES_TEST_PORT=5499 POSTGRES_TEST_USER=$USER POSTGRES_TEST_PASSWORD=groundwork-postgres-test-password clojure -X:test
+pg_ctl -D /tmp/postgres-pg stop
 ```
 
 Why it is the way it is: [`decisions/`](decisions/README.md).
