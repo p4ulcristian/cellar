@@ -13,8 +13,9 @@ is a change, given as data and run once.
 io.github.p4ulcristian/cellar {:git/tag "v0.4.2" :git/sha "03ed01c"}
 ```
 
-Needs only next.jdbc, PgJDBC, HikariCP (with slf4j-jdk14), jsonista, malli
-and [meter](https://github.com/p4ulcristian/meter) (the app's metrics, handed in). One public namespace,
+Needs only next.jdbc, PgJDBC, HikariCP (with slf4j-jdk14), jsonista, malli,
+[meter](https://github.com/p4ulcristian/meter) (the app's metrics, handed in)
+and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). One public namespace,
 `cellar.api`; its parts are `cellar.queries.*` and `cellar.tables.*`.
 
 ## The api
@@ -38,7 +39,8 @@ and [meter](https://github.com/p4ulcristian/meter) (the app's metrics, handed in
 ```clojure
 (require '[cellar.api :as cellar])
 
-(def pool (cellar/start-pool! {:host "localhost" :port 5432 :database "shop" :user "shop" :password nil
+(def pool (cellar/start-pool! {:host "localhost" :port 5432 :database "shop" :user "shop"
+                               :password password  ; safe's secret, #secret :cellar/password; nil for none
                                :tls :off :tls-root-cert nil
                                :pool-size 10
                                :connection-wait-ms 30000 :connection-check-wait-ms 5000
@@ -159,9 +161,10 @@ in its own table, `cellar.changes_done`.
 clojure -X:test     # the Postgres tests are skipped without a database
 
 # with a throwaway Postgres:
-initdb -D /tmp/cellar-pg -A trust -U "$USER"
+echo cellar-test-password > /tmp/cellar-pg-password
+initdb -D /tmp/cellar-pg -A scram-sha-256 --pwfile=/tmp/cellar-pg-password -U "$USER"
 pg_ctl -D /tmp/cellar-pg -o "-p 5499 -k /tmp -c listen_addresses=localhost" -l /tmp/cellar-pg.log start
-CELLAR_TEST_PORT=5499 CELLAR_TEST_USER=$USER clojure -X:test
+CELLAR_TEST_PORT=5499 CELLAR_TEST_USER=$USER CELLAR_TEST_PASSWORD=cellar-test-password clojure -X:test
 pg_ctl -D /tmp/cellar-pg stop
 ```
 

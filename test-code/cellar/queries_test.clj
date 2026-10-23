@@ -1,6 +1,6 @@
 (ns cellar.queries-test
   "Runs against a real Postgres when CELLAR_TEST_PORT is set (on
-   localhost, user from CELLAR_TEST_USER, no password, no TLS);
+   localhost, user from CELLAR_TEST_USER, password from CELLAR_TEST_PASSWORD, no TLS);
    says it was skipped otherwise."
   (:require
    [clojure.test :refer [deftest is testing]]

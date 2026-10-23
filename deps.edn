@@ -11,6 +11,8 @@
   org.slf4j/slf4j-jdk14             {:mvn/version "2.0.20"}
   ;; the app's meter, handed in: the pool's metrics and every query's time
   io.github.p4ulcristian/meter      {:git/tag "v0.1.2" :git/sha "a0a977b"}
+  ;; the password, a secret that prints as its name: revealed only for the driver
+  io.github.p4ulcristian/safe       {:git/tag "v0.1.0" :git/sha "b4783eb"}
   ;; jsonb columns and Postgres's query plans
   metosin/jsonista                  {:mvn/version "1.0.2"}
   ;; the settings, options and table maps, checked before anything runs

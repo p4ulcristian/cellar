@@ -124,6 +124,10 @@
                        :connection-acquire-seconds [0.001 0.01 0.1 1 10]
                        :connection-usage-seconds   [0.001 0.01 0.1 1 10 60]}}
 
+   :password is a secret, safe's (#secret :cellar/password in the app's
+   settings file), revealed only to the driver; nil for none. Written out
+   as text, it is refused.
+
    Options, every key required: {:log log :meter meter}. :log, the app's
    log, which HikariCP's and PgJDBC's own lines about this pool are written
    to, as :cellar/pool-said (its start and stop, a leak warning, a

@@ -22,7 +22,8 @@
    [cellar.queries.tables-read :as tables-read]
    [cellar.settings :as settings]
    [next.jdbc :as jdbc]
-   [next.jdbc.connection :as connection])
+   [next.jdbc.connection :as connection]
+   [safe.api :as safe])
   (:import
    (com.zaxxer.hikari HikariConfig HikariDataSource)
    (java.sql Connection PreparedStatement)))
@@ -123,7 +124,7 @@
                    (.addDataSourceProperty "ApplicationName" (str "cellar-" database))
                    (.addDataSourceProperty "prepareThreshold" "5")
                    (.addDataSourceProperty "defaultRowFetchSize" "0"))]
-      (when password (.setPassword config password))
+      (when password (.setPassword config (safe/reveal password)))
       (doseq [[k v] (tls-properties db-settings)]
         (.addDataSourceProperty config k v))
       (pool-lines/add-pool! pool-name (:log options))

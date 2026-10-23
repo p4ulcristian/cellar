@@ -12,7 +12,8 @@
    cellar's alone, closed."
   (:require
    [malli.core :as malli]
-   [malli.error :as malli-error]))
+   [malli.error :as malli-error]
+   [safe.api :as safe]))
 
 ;; -----------------------------------------------------------------------------
 ;; The pool
@@ -39,7 +40,8 @@
   "What start-pool! takes, every key required.
 
    Where and who:
-   :host :port :database :user, and :password, nil for none.
+   :host :port :database :user, and :password, a secret (safe's, read
+   from the app's secrets: #secret :cellar/password), nil for none.
    :tls: :verified (encrypted, the server's certificate checked, and its
    name must be :host) or :off. :tls-root-cert: with :verified, a file of
    the certificates to trust, or nil for the Java runtime's own; with
@@ -88,7 +90,7 @@
     [:port :int]
     [:database :string]
     [:user :string]
-    [:password [:maybe :string]]
+    [:password [:maybe safe/secret]]
     [:tls [:enum :verified :off]]
     [:tls-root-cert [:maybe :string]]
     [:pool-size [:int {:min 1}]]

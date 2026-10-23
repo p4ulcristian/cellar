@@ -5,8 +5,10 @@
   (:require
    [clojure.test :refer [deftest is testing]]
    [cellar.api :as cellar]
+   [cellar.settings :as cellar-settings]
    [cellar.tables.desired :as desired]
-   [cellar.test-settings :as test-settings])
+   [cellar.test-settings :as test-settings]
+   [safe.api :as safe])
   (:import
    (com.zaxxer.hikari HikariDataSource)))
 
@@ -32,6 +34,12 @@
            (:type (find-refusal #(cellar/start-pool! (assoc settings :connection-keepalive-every-ms 1800000) (test-settings/make-pool-options))))))
     (is (= :cellar/bad-settings
            (:type (find-refusal #(cellar/start-pool! (assoc settings :leak-warning-after-ms 1000) (test-settings/make-pool-options)))))))
+  (testing "the password is a secret: written out as text, it is refused, and the text is never said"
+    (let [refusal (find-refusal #(cellar/start-pool! (assoc settings :password "written-out-password") (test-settings/make-pool-options)))]
+      (is (= {:type :cellar/bad-settings :errors {:password ["should be a #secret, read from the settings' secrets source"]}}
+             refusal))
+      (is (not (re-find #"written-out-password" (pr-str refusal)))))
+    (is (= :nothing (find-refusal #(cellar-settings/check-settings (assoc settings :password (safe/make-secret :cellar/password "pw")))))))
   (testing "a root certificate is only for :verified"
     (is (= :cellar/bad-settings (:type (find-refusal #(cellar/start-pool! (assoc settings :tls-root-cert "/tmp/root.crt") (test-settings/make-pool-options))))))))
 

@@ -4,18 +4,24 @@
    [cellar.api :as cellar]
    [clojure.string :as str]
    [logbook.api :as logbook]
-   [meter.api :as meter]))
+   [meter.api :as meter]
+   [safe.api :as safe]))
 
 (def port (some-> (System/getenv "CELLAR_TEST_PORT") parse-long))
 
+(def password
+  "The test user's password, a secret as the app's settings hold one."
+  (some->> (System/getenv "CELLAR_TEST_PASSWORD") (safe/make-secret :cellar/password)))
+
 (defn make-pool-settings
-  "A test Postgres on localhost, the user from CELLAR_TEST_USER, no password, no TLS."
+  "A test Postgres on localhost, the user from CELLAR_TEST_USER, the
+   password from CELLAR_TEST_PASSWORD, no TLS."
   [pool-size statement-timeout-ms]
   {:host                           "localhost"
    :port                           port
    :database                       "postgres"
    :user                           (System/getenv "CELLAR_TEST_USER")
-   :password                       nil
+   :password                       password
    :tls                            :off
    :tls-root-cert                  nil
    :pool-size                      pool-size
