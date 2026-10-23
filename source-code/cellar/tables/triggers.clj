@@ -12,7 +12,8 @@
 
    A table map's :triggers are triggers declared by a library on top (or
    the app), each its own: a function, before or after which events, for
-   each row or statement (turn-declared-triggers-into-triggers); doorman's
+   each row or statement, when a condition holds or always
+   (turn-declared-triggers-into-triggers); doorman's
    fill of a record's carried columns from its parent is one."
   (:require
    [clojure.string :as str]
@@ -48,9 +49,10 @@
    its SQL, so a changed one is a new name: the old dropped, the new made."
   [table-name declared]
   (into {}
-        (for [{:keys [function arguments timing events update-of for-each]} declared
+        (for [{:keys [function arguments timing events update-of for-each] condition :when} declared
               :let [body (str (str/upper-case (name timing)) " " (write-events events update-of)
                               " ON " table-name " FOR EACH " (str/upper-case (name for-each))
+                              (when condition (str " WHEN (" condition ")"))
                               " EXECUTE FUNCTION " function "(" (str/join ", " (map quote-text arguments)) ")")
                     trigger-name (names/make-trigger-name table-name body)]]
           [trigger-name (str "CREATE TRIGGER " trigger-name " " body)])))

@@ -265,14 +265,17 @@
    none), :timing :before or :after the :events (a set of :insert :update
    :delete), :for-each :row or :statement. :update-of, with :update among
    the events: nil for a change of any column, or the columns whose change
-   calls it."
+   calls it. :when, nil to call it for every row (or statement), or a SQL
+   condition, on OLD and NEW for a row trigger, that must hold for it to
+   be called."
   [:map {:closed true}
    [:function :string]
    [:arguments [:sequential :string]]
    [:timing [:enum :before :after]]
    [:events [:set {:min 1} [:enum :insert :update :delete]]]
    [:update-of [:maybe [:sequential {:min 1} :qualified-keyword]]]
-   [:for-each [:enum :row :statement]]])
+   [:for-each [:enum :row :statement]]
+   [:when [:maybe :string]]])
 
 (def ^:private index-part
   ;; a column's key, or an expression as SQL text

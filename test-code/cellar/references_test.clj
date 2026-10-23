@@ -33,7 +33,7 @@
 
 (def ^:private fill-trigger
   {:function "public.fill_job" :arguments [] :timing :before :events #{:insert :update}
-   :update-of [:job/order-id] :for-each :row})
+   :update-of [:job/order-id] :for-each :row :when nil})
 
 (def ^:private jobs
   {:table      :jobs
@@ -256,3 +256,30 @@
             (is (= ["ALTER TABLE notes ALTER CONSTRAINT notes_note__order_id_fkey NOT DEFERRABLE"]
                    (map :sql (:instant (plan-of pool [shops orders (notes-of refusing-reference)]))))
                 "back to each statement: only that changes")))))))
+
+(deftest a-trigger-says-when-it-is-called
+  (if-not port
+    (println "cellar.references-test: skipped, CELLAR_TEST_PORT is not set")
+    (with-empty-database
+      (fn [pool]
+        (run-sql! pool (str "CREATE OR REPLACE FUNCTION public.count_moves() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                            "PERFORM set_config('test.moves', (coalesce(nullif(current_setting('test.moves', true), ''), '0')::int + 1)::text, false); "
+                            "RETURN NEW; END $$"))
+        (let [moved  {:function "public.count_moves" :arguments [] :timing :before :events #{:update} :update-of nil :for-each :row
+                      :when "OLD.order__shop_id IS DISTINCT FROM NEW.order__shop_id"}
+              counted (assoc orders :triggers [moved])]
+          (migrate-and-wait! pool [shops counted])
+          (is (= nothing-to-do (plan-of pool [shops counted])))
+          (let [[a b] (map :shop/id (find-rows pool "INSERT INTO shops (shop__id) VALUES (DEFAULT), (DEFAULT) RETURNING shop__id"))]
+            (cellar/run-in-transaction! pool {:read-only? false}
+              (fn [transaction]
+                (run-sql! transaction (str "INSERT INTO orders (order__shop_id) VALUES ('" a "')"))
+                (run-sql! transaction (str "UPDATE orders SET order__shop_id = '" a "'"))
+                (run-sql! transaction (str "UPDATE orders SET order__shop_id = '" b "'"))
+                (is (= [{:moves/count "1"}] (find-rows transaction "SELECT current_setting('test.moves') AS moves__count"))
+                    "called only when the shop changed"))))
+          (testing "another condition is another trigger"
+            (let [sqls (map :sql (:instant (plan-of pool [shops (assoc-in counted [:triggers 0 :when] nil)])))]
+              (is (= 2 (count sqls)))
+              (is (str/starts-with? (first sqls) "DROP TRIGGER"))
+              (is (not (str/includes? (second sqls) "WHEN"))))))))))

@@ -215,7 +215,10 @@ none (a one-column one is the column's `:references`):
 get a unique key together.
 Its `:triggers`, `[]` for none, are triggers a library on top (or the app)
 declares, calling a function it makes:
-`{:function "doorman.fill_1a2b3c4d" :arguments [] :timing :before :events #{:insert :update} :update-of [:job/order-id] :for-each :row}`;
+`{:function "doorman.fill_1a2b3c4d" :arguments [] :timing :before :events #{:insert :update} :update-of [:job/order-id] :for-each :row :when nil}`,
+`:when` nil to call it always, or a condition
+(`"OLD.package__workspace_id IS DISTINCT FROM NEW.package__workspace_id"`;
+[why](decisions/2026-10-23-a-trigger-says-when-it-is-called.md));
 like the change triggers, one no map names is dropped
 ([why](decisions/2026-10-23-a-table-map-says-references-over-several-columns-and-a-librarys-triggers.md)).
 

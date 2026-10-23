@@ -114,8 +114,9 @@
    A table map's :triggers are triggers a library on top (or the app)
    declares, calling a function it makes:
      {:function \"doorman.fill_1a2b3c4d\" :arguments [] :timing :before
-      :events #{:insert :update} :update-of [:job/order-id] :for-each :row}
-   each named by a hash of its SQL, made and dropped like the change
+      :events #{:insert :update} :update-of [:job/order-id] :for-each :row :when nil}
+   (:when nil to call it always, or a SQL condition on OLD and NEW), each
+   named by a hash of its SQL, made and dropped like the change
    triggers: a trigger no map names is dropped."
   (:require
    [clojure.string :as str]
