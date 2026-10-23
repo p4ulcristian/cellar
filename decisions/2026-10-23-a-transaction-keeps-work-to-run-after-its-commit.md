@@ -1,6 +1,6 @@
 # A transaction keeps work to run after its commit; work that must happen is a job
 
-> The user's decision, 2026-10-23, from Iron Rainbow's port (GROUNDWORK-GAPS.md, P7: 44 calls in 25 files run after a commit). Not built yet.
+> The user's decision, 2026-10-23, from Iron Rainbow's port (GROUNDWORK-GAPS.md, P7: 44 calls in 25 files run after a commit). Built on tidy-up, not released.
 
 **What was wrong:** nothing could run after a commit. A handler runs inside doorman's transaction and can't wait for it; attic's `delete-file!` asks to be run "after the app's transaction is kept", which no caller could do.
 
@@ -23,3 +23,10 @@
 **Instead of:**
 - **everything a backroom job**: a cache clear would run on one server, not this one, and a quick outside call waits for a worker
 - **a bridge step after doorman's transaction step**: only handlers would get it; jobs, webhooks and system runs wouldn't
+
+**Settled while building:**
+
+1. **The list lives on the transaction map `run-in-transaction!` makes** (`:cellar/after-commit`), so every transaction cellar opens has one; the probe's rolled-back transaction and the slow part's connection have none, and `run-after-commit!` refuses them as it refuses a pool, `:cellar/not-a-transaction`.
+2. **It runs once the connection is back in the pool**, after COMMIT, so the work doesn't hold one.
+3. **A failure is written to the log the pool was started with**, `:error :cellar/after-commit-failed {:cellar/pool <pool's name> :error e}`: the transaction carries no log of its own, so a message's request id is not on the line (an app that wants it catches inside its own `f`).
+4. **`run-after-commit!` returns nil** and takes `(f)` of no arguments, as the decision writes it.

@@ -26,6 +26,7 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
 | `make-query-from-sql-file` `make-query-from-sql-text` | a query from a `.sql` file on the classpath (read when its `def` loads), or from SQL text code makes |
 | `find-rows` `find-one-row` `run-statement!` | run a query on a pool or a transaction |
 | `run-in-transaction!` | `(f transaction)` in one transaction, kept or undone; `{:read-only? true}` refuses writes, `false` written out otherwise |
+| `run-after-commit!` | `(f)` kept to run once the transaction commits, in order, on the same thread; never after a rollback; a nested transaction's joins the outer's; a failure logged, the rest still run; a pool refused ([why](decisions/2026-10-23-a-transaction-keeps-work-to-run-after-its-commit.md)) |
 | `is-transaction?` | whether it was handed a transaction rather than a pool |
 | `make-plan-from-tables` | what would bring Postgres to the tables, extensions, functions and views the app declares, and the changes, changing nothing: `{:instant :slow :stops :changes-to-mark}` |
 | `run-instant-part!` `run-slow-part!` | run a plan's two parts (the deploy), each under its own statement and lock time limits |
@@ -222,7 +223,9 @@ cellar writes no line itself: `start-pool!`, `migrate!`, `start-listening!`
 and `run-and-list-tables-read` take the app's log function,
 `(log level event data)` as [logbook](https://github.com/p4ulcristian/logbook)
 makes it, under `:log` (`:cellar/planned`, `:cellar/listening-broke`,
-`:cellar/listener-function-failed`, `:cellar/tables-read-unknown`;
+`:cellar/listener-function-failed`, `:cellar/tables-read-unknown`, and
+`:cellar/after-commit-failed`, to the pool's log, for work
+`run-after-commit!` kept that threw;
 [why](decisions/2026-10-22-the-app-passes-its-log.md)). HikariCP's and
 PgJDBC's own lines about a pool (its start and stop, a leak warning, a
 connection that failed), info and up, go to the log `start-pool!` was given,

@@ -9,7 +9,7 @@
   (is (= '#{settings-shape run-and-list-tables-read turn-table-name-into-table-key start-listening! stop-listening! is-listening?
            start-pool! stop-pool!
            make-query-from-sql-file make-query-from-sql-text
-           find-rows find-one-row run-statement! run-in-transaction! is-transaction?
+           find-rows find-one-row run-statement! run-in-transaction! run-after-commit! is-transaction?
            make-plan-from-tables run-instant-part! run-slow-part! migrate!
            does-database-match-tables? turn-table-into-row-shape
            turn-key-into-column-name turn-table-key-into-table-name turn-column-type-into-postgres-type

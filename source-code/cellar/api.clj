@@ -252,9 +252,30 @@
   "Runs (f transaction) in one transaction: kept when f returns, undone when
    it throws. Returns what f returns. Inside a transaction, it joins that one.
    Options, every key required: {:read-only? false}; true, Postgres refuses
-   every write in it."
+   every write in it. Once it commits, the work run-after-commit! gave it
+   runs."
   [pool-or-transaction options f]
   (sql/run-in-transaction! pool-or-transaction options f))
+
+(defn run-after-commit!
+  "Keeps (f) to run once the transaction commits, for work that may be
+   lost (this server's cache, an outside call whose loss is harmless,
+   attic's file delete); work that must happen is a backroom job queued
+   in the same transaction. The list is per transaction: a nested
+   run-in-transaction! joins the outer one's. It runs in order, on the
+   same thread, once COMMIT has returned and the connection is back in the
+   pool; never after a rollback. One that throws is written to the pool's
+   log (:error :cellar/after-commit-failed {:cellar/pool … :error …}); the
+   commit stands and the rest still runs. Handed a pool, it refuses,
+   :cellar/not-a-transaction. Lost if the process dies between the commit
+   and the run.
+
+     (cellar/run-in-transaction! pool {:read-only? false}
+       (fn [transaction]
+         (cellar/run-statement! transaction delete-promotion {:promotion/id id})
+         (cellar/run-after-commit! transaction #(promotions/clear-cache!))))"
+  [transaction f]
+  (sql/run-after-commit! transaction f))
 
 ;; -----------------------------------------------------------------------------
 ;; What a question read, and hearing changes

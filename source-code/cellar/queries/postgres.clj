@@ -133,7 +133,8 @@
           (reset! holder datasource)
           {:cellar/datasource datasource
            :cellar/pool-name  pool-name
-           :cellar/meter      meter})
+           :cellar/meter      meter
+           :cellar/log        (:log options)})
         (catch Throwable e
           (pool-lines/remove-pool! pool-name)
           (throw e))))))
@@ -239,17 +240,48 @@
   (let [result (run-query pool-or-transaction query params {})]
     (if (vector? result) (count result) (:count result))))
 
+(defn- run-work-after-commit!
+  "Each piece of work a transaction kept, in order, on this thread; one
+   that throws is written to the pool's log, :error
+   :cellar/after-commit-failed, and the rest still runs."
+  [pool work]
+  (doseq [f work]
+    (try
+      (f)
+      (catch Throwable e
+        ((:cellar/log pool) :error :cellar/after-commit-failed {:cellar/pool (:cellar/pool-name pool) :error e})))))
+
 (defn run-in-transaction!
   "Runs (f transaction) in one transaction: everything f runs on the
    transaction is kept when f returns, and undone when f throws (the throw
    goes on). Returns what f returns. Inside a transaction, it joins that one.
    Options, every key required: :read-only?, true and Postgres refuses every
-   write in it."
+   write in it. The work run-after-commit! gave the transaction runs once
+   COMMIT has returned and the connection is back in the pool, never after
+   a rollback."
   [pool-or-transaction options f]
   (settings/check-transaction-options options)
   (if (:cellar/connection pool-or-transaction)
     (f pool-or-transaction)
-    (call-with-connection pool-or-transaction
-                          (fn [connection]
-                            (jdbc/with-transaction [connection connection {:read-only (:read-only? options)}]
-                              (f {:cellar/connection connection :cellar/meter (:cellar/meter pool-or-transaction)}))))))
+    (let [work   (atom [])
+          result (call-with-connection
+                  pool-or-transaction
+                  (fn [connection]
+                    (jdbc/with-transaction [connection connection {:read-only (:read-only? options)}]
+                      (f {:cellar/connection   connection
+                          :cellar/meter        (:cellar/meter pool-or-transaction)
+                          :cellar/after-commit work}))))]
+      (run-work-after-commit! pool-or-transaction @work)
+      result)))
+
+(defn run-after-commit!
+  "Keeps (f) to run after the transaction commits (run-in-transaction!'s,
+   the outermost one a nested call joined), in the order given, on the
+   same thread; never when it rolls back. Handed a pool, or a connection
+   no transaction of run-in-transaction! holds, it refuses,
+   :cellar/not-a-transaction: there is no commit to wait for. Returns nil."
+  [transaction f]
+  (if-let [work (:cellar/after-commit transaction)]
+    (do (swap! work conj f) nil)
+    (throw (ex-info "run-after-commit! takes a transaction run-in-transaction! made: a pool has no commit to wait for"
+                    {:type :cellar/not-a-transaction}))))
