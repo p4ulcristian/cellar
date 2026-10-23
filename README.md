@@ -131,8 +131,8 @@ An index is a map with every key written out
 and its nulls (`[:order/created-at :descending :nulls-first]`), or
 `[:order/note :unordered]` for a `:gin`, `:gist`, `:hash` or `:brin`
 index; `:method`; `:ops`, the operator classes that aren't the type's own
-(`{:order/customer-note :gin-trgm-ops}`, pg_trgm's, in `:extensions`), `{}` for none; `:unique?`; and `:where`, nil for every row. A
-table map's `:uniques` are unique keys over several plain columns
+(`{:order/customer-note :gin-trgm-ops}`, pg_trgm's, in `:extensions`),
+`{}` for none; `:unique?`; and `:where`, nil for every row. A table map's `:uniques` are unique keys over several plain columns
 (`[[:conversation/kind :conversation/subject-id]]`, `[]` for none; one
 column's is its `{:unique? true}`); one with a condition or an expression
 is an index with `:unique? true`. An index on a table with rows is built
@@ -160,13 +160,15 @@ changes' history.
 
 What a map names that Postgres already has under another name, the same
 shape, is adopted: renamed to the map's name (`ALTER … RENAME`, the catalog
-only, no scan, no rebuild); a plain unique index becomes the map's unique key from that
-index (`ADD CONSTRAINT … UNIQUE USING INDEX`). A key's shape is its columns
-and target; a check's condition, an index's body and a column's default are compared as
-Postgres prints them, asked of Postgres itself: the map's pieces are made
-on empty temporary tables in a transaction that is rolled back, and read
-back. Planning so needs the TEMP right and a transaction that isn't
-read-only; a piece Postgres refuses is a stop with its words
+only, no scan, no rebuild); a plain unique index becomes the map's unique
+key from that index (`ADD CONSTRAINT … UNIQUE USING INDEX`). A key's shape
+is its columns and target; a check's condition, an index's body, a
+column's default, a function and a view are compared as Postgres prints
+them, asked of Postgres itself: in a transaction that is rolled back, the
+maps' pieces are made on empty temporary tables, the functions and views
+under temporary names, and read back. So planning needs the TEMP right and
+a transaction that isn't read-only; a piece Postgres refuses is a stop,
+with its words
 ([why](decisions/2026-10-23-cellar-adopts-what-the-database-has-by-asking-postgres.md)).
 
 Every setting, option and table key is required: a missing or unknown one
@@ -175,6 +177,11 @@ is refused, named, with every other problem at once, before anything runs
 values above are HikariCP's and PgJDBC's own defaults, written out; what
 stays fixed, and why, is in
 [the decision](decisions/2026-10-22-every-value-that-sets-behaviour-is-a-setting.md).
+A column is the exception: it says only the options it has, since an unsaid
+one is the safe answer
+([why](decisions/2026-10-22-a-column-says-only-the-options-it-has.md));
+an unknown option is still refused.
+
 A column's type is in malli's words, as
 [wire](https://github.com/p4ulcristian/wire) reads them, and states the limit
 Postgres holds, so the row shape `turn-table-into-row-shape` makes refuses
@@ -197,11 +204,6 @@ and a type Postgres has otherwise is a stop. A `:default` is
 `uuidv7()`), `:now`, `:today` (`CURRENT_DATE`), a number, true/false, text,
 or `[]`/`{}` (empty JSON on a `:json` column; `[]` an empty array on a
 `:vector` one).
-
-A column is the exception: it says only the options it has, since an unsaid
-one is the safe answer
-([why](decisions/2026-10-22-a-column-says-only-the-options-it-has.md));
-an unknown option is still refused.
 
 cellar writes no line itself: `start-pool!`, `migrate!`, `start-listening!`
 and `run-and-list-tables-read` take the app's log function,
