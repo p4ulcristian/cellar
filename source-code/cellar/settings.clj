@@ -204,19 +204,53 @@
 ;; -----------------------------------------------------------------------------
 ;; Table maps
 
+(def ^:private reference-action
+  ;; what a reference does when the row it points at is deleted, or its
+  ;; columns change: Postgres's CASCADE, SET NULL, NO ACTION, RESTRICT
+  [:enum :cascade :set-null :refuse :restrict])
+
+(def ^:private reference-keys
+  [[:on-delete reference-action]
+   [:on-update reference-action]
+   [:checked-at [:enum :statement :commit]]])
+
+(def reference-of-column-shape
+  "A column's reference, every key written out: :to, another table's
+   one-column primary key (:shop/id); :on-delete, what a delete of the row
+   it points at does to this one, and :on-update, what a change of that
+   row's key does: :cascade (deleted, or changed, with it), :set-null (set
+   to null; only on an :optional? column), :refuse (NO ACTION: refused while
+   this row points at it, checked when the reference is) or :restrict
+   (refused at once, even when checked at commit); :checked-at, :statement
+   (after each statement) or :commit (DEFERRABLE INITIALLY DEFERRED: when
+   the transaction commits)."
+  (into [:map {:closed true} [:to :qualified-keyword]] reference-keys))
+
+(def reference-shape
+  "A reference over several columns: :columns, the row's, in order;
+   :to, the other table's, in the same order, its primary key among them;
+   :on-delete, :on-update and :checked-at as a column's reference says
+   them (reference-of-column-shape); :set-null only when every one of
+   :columns is :optional?."
+  (into [:map {:closed true}
+         [:columns [:sequential {:min 2} :qualified-keyword]]
+         [:to [:sequential {:min 2} :qualified-keyword]]]
+        reference-keys))
+
 (def column-options-shape
   "A column's options, only the ones it has; an unsaid one is no or none,
    the safe side: NOT NULL, not unique, not a primary key, no default, no
    reference. :primary-key? :optional? (NULL allowed) :unique?, true or
    false; :default, nil for none, or :random-uuid, :now, a number,
-   true/false or text; :references, nil, or another table's one-column
-   primary key (:shop/id). Closed: an unknown key is refused."
+   true/false or text; :references, nil, or a map: another table's one-column
+   primary key and what its reference does (reference-of-column-shape).
+   Closed: an unknown key is refused."
   [:map {:closed true}
    [:primary-key? {:optional true} :boolean]
    [:optional? {:optional true} :boolean]
    [:unique? {:optional true} :boolean]
    [:default {:optional true} [:maybe [:or [:enum :random-uuid :now] number? boolean? :string]]]
-   [:references {:optional true} [:maybe :qualified-keyword]]])
+   [:references {:optional true} [:maybe reference-of-column-shape]]])
 
 (def column-shape
   "A column: [key type] or [key type options], the type in wire's words."
@@ -224,18 +258,6 @@
    [2 [:tuple :qualified-keyword :any]]
    [3 [:tuple :qualified-keyword :any column-options-shape]]
    [::malli/default [:fn {:error/message "a column is [key type] or [key type options]"} (constantly false)]]])
-
-(def reference-shape
-  "A reference over several columns: :columns, the row's, in order;
-   :to, the other table's, in the same order, its primary key among them;
-   :on-update, :cascade (a change of the other row's columns is carried to
-   this row) or :refuse (the change is refused while this row points at
-   it). A delete of the other row is refused while this row points at it,
-   as with a column's :references."
-  [:map {:closed true}
-   [:columns [:sequential {:min 2} :qualified-keyword]]
-   [:to [:sequential {:min 2} :qualified-keyword]]
-   [:on-update [:enum :cascade :refuse]]])
 
 (def trigger-shape
   "A trigger a library (or the app) declares on its table: Postgres calls

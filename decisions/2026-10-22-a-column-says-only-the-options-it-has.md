@@ -1,5 +1,7 @@
 # A column says only the options it has; a table map still writes out its keys
 
+> **Changed in part** by [A reference writes out what it does on delete, on update, and when it is checked](2026-10-23-a-reference-writes-out-what-it-does-on-delete-update-and-when-checked.md) (2026-10-23, on tidy-up): `:references` is a map that writes out what the reference does, `{:to :shop/id :on-delete :refuse :on-update :refuse :checked-at :statement}`, not the bare key that meant all three unsaid.
+
 > Changes in part [Every value that sets behaviour is a setting; no hidden defaults](2026-10-22-every-value-that-sets-behaviour-is-a-setting.md): a column no longer writes out its five options. Since v0.1.3.
 
 **Decision:** a column is `[key type]` or `[key type options]`, and its options map says only the options it has. An unsaid option means no, or none:

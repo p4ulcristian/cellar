@@ -22,7 +22,7 @@
 (def ^:private orders
   {:table      :orders
    :columns    [[:order/id      :uuid {:primary-key? true :default :random-uuid}]
-                [:order/shop-id :uuid {:references :shop/id}]]
+                [:order/shop-id :uuid {:references {:to :shop/id :on-delete :refuse :on-update :refuse :checked-at :statement}}]]
    :indexes    []
    :references []
    :triggers   []
@@ -36,10 +36,10 @@
 (def ^:private jobs
   {:table      :jobs
    :columns    [[:job/id       :uuid {:primary-key? true :default :random-uuid}]
-                [:job/order-id :uuid {:references :order/id}]
+                [:job/order-id :uuid {:references {:to :order/id :on-delete :refuse :on-update :refuse :checked-at :statement}}]
                 [:job/shop-id  :uuid]]
    :indexes    [[:job/order-id]]
-   :references [{:columns [:job/order-id :job/shop-id] :to [:order/id :order/shop-id] :on-update :cascade}]
+   :references [{:columns [:job/order-id :job/shop-id] :to [:order/id :order/shop-id] :on-delete :refuse :on-update :cascade :checked-at :statement}]
    :triggers   [fill-trigger]
    :gates      nil
    :on-change  nil})
@@ -75,7 +75,7 @@
          (:type (ex-data (try (cellar/make-plan-from-tables nil [shops orders (assoc-in jobs [:references 0 :to] [:order/shop-id :order/id :order/shop-id])] [])
                               (catch Exception e e)))))
       "columns and :to pair up")
-  (let [shopless (assoc jobs :references [{:columns [:job/shop-id :job/shop-id] :to [:order/shop-id :order/shop-id] :on-update :cascade}])]
+  (let [shopless (assoc jobs :references [{:columns [:job/shop-id :job/shop-id] :to [:order/shop-id :order/shop-id] :on-delete :refuse :on-update :cascade :checked-at :statement}])]
     (is (re-find #"primary key among :to"
                  (ex-message (try (cellar/make-plan-from-tables nil [shops orders shopless] []) (catch Exception e e))))))
   (is (= :cellar/bad-tables
@@ -128,7 +128,7 @@
               (is (= ["CREATE TRIGGER"] (map #(subs (:sql %) 0 14) instant)) "only the trigger is instant")
               (is (re-find #"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS orders_order__id_order__shop_id_key ON orders \(order__id, order__shop_id\)"
                            (first slow-sql)))
-              (is (re-find #"ADD CONSTRAINT jobs_job__order_id_job__shop_id_fkey FOREIGN KEY \(job__order_id, job__shop_id\) REFERENCES orders \(order__id, order__shop_id\) ON UPDATE CASCADE NOT VALID"
+              (is (re-find #"ADD CONSTRAINT jobs_job__order_id_job__shop_id_fkey FOREIGN KEY \(job__order_id, job__shop_id\) REFERENCES orders \(order__id, order__shop_id\) ON DELETE NO ACTION ON UPDATE CASCADE NOT VALID"
                            (nth slow-sql 2)))
               (is (str/starts-with? (nth slow-sql 3) "ALTER TABLE jobs VALIDATE CONSTRAINT"))))
           (migrate-and-wait! pool [shops orders jobs])
@@ -137,7 +137,7 @@
             (let [refusing (assoc-in jobs [:references 0 :on-update] :refuse)
                   {:keys [instant slow]} (plan-of pool [shops orders refusing])]
               (is (= ["ALTER TABLE jobs DROP CONSTRAINT jobs_job__order_id_job__shop_id_fkey"
-                      "ALTER TABLE jobs ADD CONSTRAINT jobs_job__order_id_job__shop_id_fkey FOREIGN KEY (job__order_id, job__shop_id) REFERENCES orders (order__id, order__shop_id) NOT VALID"]
+                      "ALTER TABLE jobs ADD CONSTRAINT jobs_job__order_id_job__shop_id_fkey FOREIGN KEY (job__order_id, job__shop_id) REFERENCES orders (order__id, order__shop_id) ON DELETE NO ACTION ON UPDATE NO ACTION NOT VALID"]
                      (map :sql instant)))
               (is (= 1 (count slow)))
               (migrate-and-wait! pool [shops orders refusing])
@@ -164,7 +164,7 @@
         (migrate-and-wait! pool [shops orders jobs])
         (let [renamed (-> jobs
                           (assoc :columns [[:job/id :uuid {:primary-key? true :default :random-uuid}]
-                                           [:job/parent-id :uuid {:references :order/id}]
+                                           [:job/parent-id :uuid {:references {:to :order/id :on-delete :refuse :on-update :refuse :checked-at :statement}}]
                                            [:job/shop-id :uuid]])
                           (assoc :indexes [[:job/parent-id]])
                           (assoc-in [:references 0 :columns] [:job/parent-id :job/shop-id])
@@ -186,3 +186,69 @@
         (is (false? (cellar/is-transaction? pool)))
         (is (true? (cellar/run-in-transaction! pool {:read-only? true} cellar/is-transaction?)))
         (finally (cellar/stop-pool! pool))))))
+
+(def ^:private refusing-reference {:to :order/id :on-delete :refuse :on-update :refuse :checked-at :statement})
+
+(defn- notes-of [reference]
+  {:table      :notes
+   :columns    [[:note/id :uuid {:primary-key? true :default :random-uuid}]
+                [:note/order-id :uuid {:optional? true :references reference}]]
+   :indexes    []
+   :references []
+   :triggers   []
+   :gates      nil
+   :on-change  nil})
+
+(deftest a-reference-says-what-it-does-on-delete-update-and-when-checked
+  (is (= :cellar/bad-reference
+         (:type (ex-data (try (cellar/make-plan-from-tables nil [shops orders (assoc-in jobs [:columns 1 2 :references :on-delete] :set-null)] [])
+                              (catch Exception e e)))))
+      ":set-null on a column that isn't :optional? is refused")
+  (is (= :cellar/bad-tables
+         (:type (ex-data (try (cellar/make-plan-from-tables nil [shops orders (update-in jobs [:columns 1 2 :references] dissoc :checked-at)] [])
+                              (catch Exception e e)))))
+      "every key written out")
+  (if-not port
+    (println "cellar.references-test: skipped, CELLAR_TEST_PORT is not set")
+    (with-empty-database
+      (fn [pool]
+        (migrate-and-wait! pool [shops orders (notes-of refusing-reference)])
+        (run-sql! pool "ALTER TABLE notes DROP CONSTRAINT notes_note__order_id_fkey")
+        (run-sql! pool "ALTER TABLE notes ADD CONSTRAINT notes_order_fk FOREIGN KEY (note__order_id) REFERENCES orders ON DELETE CASCADE")
+        (testing "a key that cascades deletes isn't the map's, which refuses them: made again, proven in the slow part"
+          (let [{:keys [instant slow]} (plan-of pool [shops orders (notes-of refusing-reference)])]
+            (is (= ["ALTER TABLE notes RENAME CONSTRAINT notes_order_fk TO notes_note__order_id_fkey"
+                    "ALTER TABLE notes DROP CONSTRAINT notes_note__order_id_fkey"
+                    "ALTER TABLE notes ADD CONSTRAINT notes_note__order_id_fkey FOREIGN KEY (note__order_id) REFERENCES orders (order__id) ON DELETE NO ACTION ON UPDATE NO ACTION NOT VALID"]
+                   (map :sql instant)))
+            (is (= ["ALTER TABLE notes VALIDATE CONSTRAINT notes_note__order_id_fkey"] (map :sql slow)))))
+        (testing "the map's cascade and set null are Postgres's"
+          (let [set-null (assoc refusing-reference :on-delete :set-null :on-update :cascade)]
+            (migrate-and-wait! pool [shops orders (notes-of set-null)])
+            (is (= nothing-to-do (plan-of pool [shops orders (notes-of set-null)])))
+            (let [shop  (:shop/id (first (find-rows pool "INSERT INTO shops DEFAULT VALUES RETURNING shop__id")))
+                  order (:order/id (first (find-rows pool (str "INSERT INTO orders (order__shop_id) VALUES ('" shop "') RETURNING order__id"))))]
+              (run-sql! pool (str "INSERT INTO notes (note__order_id) VALUES ('" order "')"))
+              (run-sql! pool "DELETE FROM orders")
+              (is (= [nil] (map :note/order-id (find-rows pool "SELECT note__order_id FROM notes")))))))
+        (testing "checked at commit: changed in place, the catalog only"
+          (let [at-commit (assoc refusing-reference :checked-at :commit)
+                {:keys [instant slow]} (plan-of pool [shops orders (notes-of at-commit)])]
+            (is (= ["ALTER TABLE notes DROP CONSTRAINT notes_note__order_id_fkey"
+                    "ALTER TABLE notes ADD CONSTRAINT notes_note__order_id_fkey FOREIGN KEY (note__order_id) REFERENCES orders (order__id) ON DELETE NO ACTION ON UPDATE NO ACTION DEFERRABLE INITIALLY DEFERRED NOT VALID"]
+                   (map :sql instant))
+                "with other actions too, made again")
+            (is (= 1 (count slow)))
+            (migrate-and-wait! pool [shops orders (notes-of at-commit)])
+            (is (= nothing-to-do (plan-of pool [shops orders (notes-of at-commit)])))
+            (testing "a note may name its order before the order is made, in one transaction"
+              (cellar/run-in-transaction! pool {:read-only? false}
+                (fn [transaction]
+                  (let [order (random-uuid)
+                        shop  (:shop/id (first (find-rows transaction "INSERT INTO shops DEFAULT VALUES RETURNING shop__id")))]
+                    (run-sql! transaction (str "INSERT INTO notes (note__order_id) VALUES ('" order "')"))
+                    (run-sql! transaction (str "INSERT INTO orders (order__id, order__shop_id) VALUES ('" order "', '" shop "')")))))
+              (is (= 2 (count (find-rows pool "SELECT note__id FROM notes")))))
+            (is (= ["ALTER TABLE notes ALTER CONSTRAINT notes_note__order_id_fkey NOT DEFERRABLE"]
+                   (map :sql (:instant (plan-of pool [shops orders (notes-of refusing-reference)]))))
+                "back to each statement: only that changes")))))))

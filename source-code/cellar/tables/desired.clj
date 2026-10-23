@@ -4,7 +4,8 @@
 
      {:table     :orders
       :columns   [[:order/id      :uuid   {:primary-key? true :default :random-uuid}]
-                  [:order/shop-id :uuid   {:references :shop/id}]
+                  [:order/shop-id :uuid   {:references {:to :shop/id :on-delete :refuse :on-update :refuse
+                                                         :checked-at :statement}}]
                   [:order/note    :string {:optional? true}]]
       :indexes   [[:order/shop-id]]
       :references []
@@ -59,30 +60,47 @@
                            reference)
       :else target)))
 
+(defn- check-set-null
+  "A reference that sets its columns to null on a delete or update names
+   only :optional? columns; throws otherwise."
+  [table-name table-map column-keys reference]
+  (when (some #{:set-null} [(:on-delete reference) (:on-update reference)])
+    (let [optional? (into {} (for [[k _ options] (:columns table-map)] [k (boolean (:optional? options))]))]
+      (when-let [required (seq (remove optional? column-keys))]
+        (throw-bad-reference (str table-name "'s reference " (pr-str reference) " sets " (pr-str (vec required))
+                                  " to null, which isn't {:optional? true}")
+                             reference)))))
+
+(defn- make-foreign-key [foreign-table column-names foreign-column-names {:keys [on-delete on-update checked-at]}]
+  {:columns column-names :foreign-table foreign-table :foreign-columns foreign-column-names
+   :on-delete on-delete :on-update on-update :checked-at checked-at :match :simple})
+
 (defn- turn-references-into-foreign-keys
-  "{name {:columns :foreign-table :foreign-columns :on-update}}: a column's
-   :references (on update refused) and the table's references over
-   several columns."
-  [table-maps tables-by-primary-key table-name {:keys [columns references]}]
+  "{name {:columns :foreign-table :foreign-columns :on-delete :on-update
+   :checked-at :match}}: a column's :references and the table's
+   references over several columns, each saying what it does."
+  [table-maps tables-by-primary-key table-name {:keys [columns references] :as table-map}]
   (merge
    (into {}
-         (for [[k _ {references-key :references}] columns
-               :when references-key
-               :let [column-name   (names/turn-key-into-column-name k)
-                     foreign-table (or (get tables-by-primary-key references-key)
+         (for [[k _ {reference :references}] columns
+               :when reference
+               :let [target        (:to reference)
+                     column-name   (names/turn-key-into-column-name k)
+                     foreign-table (or (get tables-by-primary-key target)
                                        (throw-bad-reference (str table-name "." column-name " references "
-                                                                 references-key ", which is no table's one-column primary key")
-                                                            references-key))]]
+                                                                 target ", which is no table's one-column primary key")
+                                                            reference))
+                     _             (check-set-null table-name table-map [k] reference)]]
            [(names/make-foreign-key-name table-name [column-name])
-            {:columns [column-name] :foreign-table foreign-table
-             :foreign-columns [(names/turn-key-into-column-name references-key)] :on-update :refuse}]))
+            (make-foreign-key foreign-table [column-name] [(names/turn-key-into-column-name target)] reference)]))
    (into {}
-         (for [{:keys [to on-update] :as reference} references
+         (for [{:keys [to] :as reference} references
                :let [target       (find-target-of-reference table-maps table-name reference)
-                     column-names (mapv names/turn-key-into-column-name (:columns reference))]]
+                     column-names (mapv names/turn-key-into-column-name (:columns reference))
+                     _            (check-set-null table-name table-map (:columns reference) reference)]]
            [(names/make-foreign-key-name table-name column-names)
-            {:columns column-names :foreign-table (names/turn-table-key-into-table-name (:table target))
-             :foreign-columns (mapv names/turn-key-into-column-name to) :on-update on-update}]))))
+            (make-foreign-key (names/turn-table-key-into-table-name (:table target)) column-names
+                              (mapv names/turn-key-into-column-name to) reference)]))))
 
 (defn- check-triggers
   "A trigger's :update-of names columns of its table, and only with

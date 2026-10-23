@@ -5,6 +5,10 @@ SELECT CASE WHEN n.nspname = 'public' THEN c.relname::text ELSE n.nspname || '.'
        con.contype::text          AS constraint_type,
        con.convalidated           AS validated,
        con.confupdtype::text      AS on_update,
+       con.confdeltype::text      AS on_delete,
+       con.condeferrable          AS deferrable,
+       con.condeferred            AS deferred,
+       con.confmatchtype::text    AS match,
        CASE WHEN con.contype = 'c' THEN pg_get_expr(con.conbin, con.conrelid) END AS condition,
        (SELECT array_agg(a.attname::text ORDER BY k.ord)
         FROM unnest(con.conkey) WITH ORDINALITY k(attnum, ord)

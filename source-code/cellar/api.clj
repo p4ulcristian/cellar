@@ -18,7 +18,8 @@
      (def orders
        {:table     :orders
         :columns   [[:order/id         :uuid         {:primary-key? true :default :random-uuid}]
-                    [:order/shop-id    :uuid         {:references :shop/id}]
+                    [:order/shop-id    :uuid         {:references {:to :shop/id :on-delete :refuse
+                                                                   :on-update :refuse :checked-at :statement}}]
                     [:order/status     [:enum \"draft\" \"done\"] {:default \"draft\"}]
                     [:order/note       :string       {:optional? true}]
                     [:order/created-at :time/instant {:default :now}]
@@ -54,8 +55,11 @@
    :string :boolean :time/instant :time/local-date [:enum …]); it is NOT
    NULL unless {:optional? true}; {:unique? true} makes a unique key;
    {:primary-key? true} puts it in the primary key; :default is
-   :random-uuid, :now, a number, true/false or text; {:references :shop/id}
-   points at another table's one-column primary key. A table key with a
+   :random-uuid, :now, a number, true/false or text; :references points at
+   another table's one-column primary key, saying what it does:
+   {:to :shop/id :on-delete :refuse :on-update :refuse :checked-at :statement},
+   each action :cascade, :set-null (an :optional? column only), :refuse (NO
+   ACTION) or :restrict, checked after each :statement or at :commit. A table key with a
    namespace is in that Postgres schema (folder): :billing/invoices is
    billing.invoices; one without is in public.
 
@@ -86,15 +90,16 @@
    function after each insert, update and delete, the changed rows readable
    in it as cellar_new_rows and cellar_old_rows.
    A table map's :references are references over several columns
-     {:columns [:job/order-id :job/shop-id] :to [:order/id :order/shop-id] :on-update :cascade}
+     {:columns [:job/order-id :job/shop-id] :to [:order/id :order/shop-id]
+      :on-delete :refuse :on-update :cascade :checked-at :statement}
    (a one-column one is the column's :references): :to names the other
    table's columns, its primary key among them, which get a unique key
    together (Postgres points a reference only at columns unique together;
    with the primary key among them it holds for every row); :on-update
    :cascade carries a change of the other row's columns to this row
-   (Postgres's own, past the gates), :refuse refuses it. A delete of the
-   other row is refused while a row points at it. Made NOT VALID and
-   proven in the slow part, after the unique key when that is new.
+   (Postgres's own, past the gates). Made NOT VALID and proven in the slow
+   part, after the unique key when that is new; one that acts otherwise
+   than its map is made again, one checked otherwise changed in place.
    A table map's :triggers are triggers a library on top (or the app)
    declares, calling a function it makes:
      {:function \"doorman.fill_1a2b3c4d\" :arguments [] :timing :before

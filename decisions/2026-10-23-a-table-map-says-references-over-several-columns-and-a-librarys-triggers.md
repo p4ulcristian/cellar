@@ -1,5 +1,7 @@
 # A table map says references over several columns, and the triggers a library declares
 
+> **Changed in part** by [A reference writes out what it does on delete, on update, and when it is checked](2026-10-23-a-reference-writes-out-what-it-does-on-delete-update-and-when-checked.md) (2026-10-23, on tidy-up): a several-column reference writes out `:on-delete` and `:checked-at` too, and `:on-update` takes `:set-null` and `:restrict` as well.
+
 > Since v0.4.5. Adds to [Changes are data, and v1 makes tables, columns, references, enums and indexes](2026-10-22-changes-are-data-and-what-v1-makes.md) (a reference was one column, to a one-column primary key) and [A query knows the tables it reads; a table can call a function on change](2026-10-22-a-query-knows-its-tables-and-postgres-can-be-heard.md) (the change triggers were the only triggers a map could say). Asked for by doorman's [Records under records wait for cellar's matching links](https://github.com/p4ulcristian/doorman/blob/main/decisions/2026-10-23-records-under-records-wait-for-cellar.md).
 
 **Decision:** a table map writes out two more keys, `[]` for none:

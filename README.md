@@ -58,7 +58,8 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
                                :meter meter}))  ; the app's: this pool's metrics, every query's time
 
 ;; a column is [key type] or [key type options], and says only the options it has:
-;; an unsaid one is no or none (NOT NULL, not unique, not a primary key, no default, no reference)
+;; an unsaid one is no or none (NOT NULL, not unique, not a primary key, no default, no reference);
+;; a reference writes out what it does on delete and update, and when it is checked
 (def shops
   {:table     :shops
    :columns   [[:shop/id   :uuid   {:primary-key? true :default :random-uuid}]
@@ -72,7 +73,8 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
 (def orders
   {:table     :orders
    :columns   [[:order/id            :uuid         {:primary-key? true :default :random-uuid}]
-               [:order/shop-id       :uuid         {:references :shop/id}]
+               [:order/shop-id       :uuid         {:references {:to :shop/id :on-delete :refuse :on-update :refuse
+                                                                 :checked-at :statement}}]
                [:order/status        [:enum "draft" "paid" "coated"]]
                [:order/total         :decimal      {:default 0}]
                [:order/customer-note :string       {:optional? true}]
@@ -172,13 +174,22 @@ rows as `cellar_new_rows` and `cellar_old_rows`. cellar makes neither: the
 app, or a library on top, passes them in. cellar keeps the changes it has run
 in its own table, `cellar.changes_done`.
 
+A reference writes out every key, a column's
+(`{:to :shop/id :on-delete :cascade :on-update :refuse :checked-at :statement}`)
+and a table's alike: `:on-delete` and `:on-update` are `:cascade` (the row
+is deleted, or its columns changed, with the other row's, by Postgres, past
+the gates), `:set-null` (only on `:optional?` columns), `:refuse` (NO
+ACTION: refused while a row points at it) or `:restrict` (refused at once,
+even checked at commit); `:checked-at` is `:statement` or `:commit`
+(DEFERRABLE INITIALLY DEFERRED). cellar reads all three from Postgres: a
+key that acts otherwise is made again (NOT VALID, then proven in the slow
+part); one checked otherwise is changed in place
+([why](decisions/2026-10-23-a-reference-writes-out-what-it-does-on-delete-update-and-when-checked.md)).
 A table map's `:references` are references over several columns, `[]` for
 none (a one-column one is the column's `:references`):
-`{:columns [:job/order-id :job/shop-id] :to [:order/id :order/shop-id] :on-update :cascade}`.
+`{:columns [:job/order-id :job/shop-id] :to [:order/id :order/shop-id] :on-delete :refuse :on-update :cascade :checked-at :statement}`.
 `:to` names the other table's columns, its primary key among them, which
-get a unique key together; `:on-update` is `:cascade` (a change of the other
-row's columns is carried to this row, by Postgres, past the gates) or
-`:refuse`; a delete of the other row is refused while a row points at it.
+get a unique key together.
 Its `:triggers`, `[]` for none, are triggers a library on top (or the app)
 declares, calling a function it makes:
 `{:function "doorman.fill_1a2b3c4d" :arguments [] :timing :before :events #{:insert :update} :update-of [:job/order-id] :for-each :row}`;

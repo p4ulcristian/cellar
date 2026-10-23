@@ -5,8 +5,9 @@
      {\"orders\" {:columns      [{:name \"order__id\" :type \"uuid\" :not-null? true :default \"gen_random_uuid()\"} …]
                  :primary-key  [\"order__id\"]
                  :foreign-keys {\"orders_order__shop_id_fkey\" {:columns [\"order__shop_id\"] :foreign-table \"shops\"
-                                                              :foreign-columns [\"shop__id\"] :on-update :refuse
-                                                              :validated? true}}
+                                                              :foreign-columns [\"shop__id\"] :on-delete :refuse
+                                                              :on-update :refuse :checked-at :statement
+                                                              :match :simple :validated? true}}
                  :uniques      {\"orders_order__id_order__shop_id_key\" {:columns [\"order__id\" \"order__shop_id\"]}}
                  :checks       {\"orders_order__status_enum\" {:condition \"(order__status = ANY (ARRAY['draft'::text, 'done'::text]))\"
                                                            :validated? true}}
@@ -71,20 +72,37 @@
       (throw (ex-info (str "An index definition cellar can't read: " definition)
                       {:type :cellar/unread-index :definition definition}))))
 
-(def ^:private on-update-actions
-  "pg_constraint's confupdtype: no action is cellar's :refuse; the others
-   cellar never makes, so a map never says them and they differ."
+(def ^:private reference-actions
+  "pg_constraint's confdeltype and confupdtype: no action is cellar's
+   :refuse; set default cellar never makes, so a map never says it and it
+   differs."
   {"a" :refuse "c" :cascade "r" :restrict "n" :set-null "d" :set-default})
 
-(defn- add-constraint [tables {:keys [table-name constraint-name constraint-type validated condition on-update
-                                      column-names foreign-table foreign-column-names]}]
+(def ^:private reference-matches
+  "pg_constraint's confmatchtype: cellar makes MATCH SIMPLE."
+  {"s" :simple "f" :full "p" :partial})
+
+(defn- find-checked-at
+  "When a reference is checked: :statement (not deferrable), :commit
+   (deferrable, initially deferred), or :deferrable-immediate, which no map
+   says."
+  [deferrable deferred]
+  (cond (not deferrable) :statement
+        deferred         :commit
+        :else            :deferrable-immediate))
+
+(defn- add-constraint [tables {:keys [table-name constraint-name constraint-type validated condition on-update on-delete
+                                      deferrable deferred match column-names foreign-table foreign-column-names]}]
   (case constraint-type
     "p" (assoc-in tables [table-name :primary-key] column-names)
     "f" (assoc-in tables [table-name :foreign-keys constraint-name]
                   {:columns         (vec column-names)
                    :foreign-table   foreign-table
                    :foreign-columns (vec foreign-column-names)
-                   :on-update       (get on-update-actions on-update)
+                   :on-delete       (get reference-actions on-delete)
+                   :on-update       (get reference-actions on-update)
+                   :checked-at      (find-checked-at deferrable deferred)
+                   :match           (get reference-matches match)
                    :validated?      validated})
     "u" (assoc-in tables [table-name :uniques constraint-name] {:columns (vec column-names)})
     "c" (if (str/ends-with? constraint-name "_not_null")

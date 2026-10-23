@@ -237,10 +237,17 @@
   (str "CREATE " (when unique? "UNIQUE ") "INDEX " (when concurrently? "CONCURRENTLY IF NOT EXISTS ")
        index-name " ON " table-name " " sql-body))
 
-(defn- write-foreign-key [table-name fk-name {:keys [columns foreign-table foreign-columns on-update]}]
+(def ^:private action-sql
+  {:cascade "CASCADE" :set-null "SET NULL" :refuse "NO ACTION" :restrict "RESTRICT"})
+
+(def ^:private checked-at-sql
+  {:statement "NOT DEFERRABLE" :commit "DEFERRABLE INITIALLY DEFERRED"})
+
+(defn- write-foreign-key [table-name fk-name {:keys [columns foreign-table foreign-columns on-delete on-update checked-at]}]
   (str "ALTER TABLE " table-name " ADD CONSTRAINT " fk-name
        " FOREIGN KEY (" (str/join ", " columns) ") REFERENCES " foreign-table " (" (str/join ", " foreign-columns) ")"
-       (when (= :cascade on-update) " ON UPDATE CASCADE")))
+       " ON DELETE " (action-sql on-delete) " ON UPDATE " (action-sql on-update)
+       (when (= :commit checked-at) (str " " (checked-at-sql checked-at)))))
 
 (defn- write-table-parts [{:keys [columns primary-key uniques]}]
   (concat (map write-column columns)
@@ -415,11 +422,12 @@
             state (:triggers desired))))
 
 (defn- is-reference-changed?
-  "Whether a reference Postgres has differs from its map's: other columns
-   pointed at, or another ON UPDATE."
+  "Whether a reference Postgres has differs from its map's in what it is:
+   other columns pointed at, another ON DELETE or ON UPDATE, another match.
+   When it is checked can change in place (ALTER CONSTRAINT)."
   [found fk]
-  (not= (select-keys found [:columns :foreign-table :foreign-columns :on-update])
-        (select-keys fk [:columns :foreign-table :foreign-columns :on-update])))
+  (not= (select-keys found [:columns :foreign-table :foreign-columns :on-delete :on-update :match])
+        (select-keys fk [:columns :foreign-table :foreign-columns :on-delete :on-update :match])))
 
 (defn- plan-dropped-references
   "The references Postgres has that no map says, or that a map says
@@ -465,9 +473,13 @@
                       (-> state
                           (add-instant (str (write-foreign-key table-name n fk) " NOT VALID") (str "missing reference " n))
                           (add-slow (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows"))))
-                    (not (:validated? found))
-                    (add-slow state (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows"))
-                    :else state)))
+                    :else
+                    (cond-> state
+                      (not= (:checked-at fk) (:checked-at found))
+                      (add-instant (str "ALTER TABLE " table-name " ALTER CONSTRAINT " n " " (checked-at-sql (:checked-at fk)))
+                                   (str "reference " n " is checked " (if (= :commit (:checked-at fk)) "at commit" "after each statement")))
+                      (not (:validated? found))
+                      (add-slow (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows"))))))
               state (:foreign-keys desired))
       ;; checks: compared as Postgres prints them; NOT VALID now, VALIDATE in the slow part
       (reduce (fn [state [n check]]

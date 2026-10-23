@@ -23,7 +23,7 @@
 (def ^:private orders
   {:table     :orders
    :columns   [[:order/id         :uuid         {:primary-key? true :default :random-uuid}]
-               [:order/shop-id    :uuid         {:references :shop/id}]
+               [:order/shop-id    :uuid         {:references {:to :shop/id :on-delete :refuse :on-update :refuse :checked-at :statement}}]
                [:order/total      :decimal      {:default 0}]
                [:order/status     [:enum "draft" "done"] {:default "draft"}]
                [:order/note       :string       {:optional? true}]

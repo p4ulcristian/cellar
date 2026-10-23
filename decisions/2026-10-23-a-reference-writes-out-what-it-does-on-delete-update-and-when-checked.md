@@ -1,6 +1,6 @@
 # A reference writes out what it does on delete, on update, and when it is checked
 
-> The user's decision, 2026-10-23, from Iron Rainbow's port (GROUNDWORK-GAPS.md section 1: ON DELETE on 223 keys, ON UPDATE CASCADE on 75, 3 deferrable). Not built yet.
+> The user's decision, 2026-10-23, from Iron Rainbow's port (GROUNDWORK-GAPS.md section 1: ON DELETE on 223 keys, ON UPDATE CASCADE on 75, 3 deferrable). Built on tidy-up, not released.
 
 **What was wrong:** a column's `:references :package/id` meant, unsaid, "refuse the delete, refuse the update, check at the statement". cellar read only a key's update action, so an existing ON DELETE CASCADE key counted as the same as a map that refuses deletes: the map and Postgres disagreed and nothing said so.
 
@@ -23,3 +23,11 @@
 **Instead of:**
 - **the bare keyword as a short, safe form, a map only when special**: two forms, and the short one hides three behaviours
 - **Iron Rainbow dropping what cellar lacked**: 147 cascades change behaviour and 75 keys are rebuilt
+
+**Settled while building:**
+
+1. **A table's several-column reference takes all four actions on update too**, not only `:cascade` and `:refuse` as before.
+2. **What no map says differs**: a key that is `DEFERRABLE INITIALLY IMMEDIATE` is changed in place to the map's `:checked-at`; one with `SET DEFAULT`, or `MATCH FULL`, is made again.
+3. **The SQL says both actions always**: `ON DELETE NO ACTION ON UPDATE CASCADE`, and `DEFERRABLE INITIALLY DEFERRED` when checked at commit.
+4. **Only `:checked-at` changed is `ALTER CONSTRAINT`**, in the instant part; another action besides is a key made again, checked-at and all.
+5. **`:set-null` on a delete or an update needs every column `:optional?`**, a column's and a several-column reference's alike; refused at the start, `:cellar/bad-reference`.
