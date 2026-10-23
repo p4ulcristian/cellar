@@ -26,6 +26,7 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
 | `make-query-from-sql-file` `make-query-from-sql-text` | a query from a `.sql` file on the classpath (read when its `def` loads), or from SQL text code makes |
 | `find-rows` `find-one-row` `run-statement!` | run a query on a pool or a transaction |
 | `run-in-transaction!` | `(f transaction)` in one transaction, kept or undone; `{:read-only? true}` refuses writes, `false` written out otherwise |
+| `is-transaction?` | whether it was handed a transaction rather than a pool |
 | `make-plan-from-tables` | what would bring Postgres to the maps and changes, running nothing: `{:instant :slow :stops :changes-to-mark}` |
 | `run-instant-part!` `run-slow-part!` | run a plan's two parts (the deploy), each under its own statement and lock time limits |
 | `migrate!` | plan, run the instant part now and the slow part on a thread, each planned statement written to the log |
@@ -63,6 +64,8 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
    :columns   [[:shop/id   :uuid   {:primary-key? true :default :random-uuid}]
                [:shop/name :string]]
    :indexes   []
+   :references []
+   :triggers  []
    :gates     nil
    :on-change nil})
 
@@ -75,6 +78,8 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
                [:order/customer-note :string       {:optional? true}]
                [:order/created-at    :time/instant {:default :now}]]
    :indexes   [[:order/shop-id :order/created-at]]
+   :references []
+   :triggers  []
    :gates     nil
    :on-change nil})
 
@@ -83,6 +88,8 @@ and [safe](https://github.com/p4ulcristian/safe) (the password is its secret). O
    :columns   [[:partner-payout/id     :uuid    {:primary-key? true :default :random-uuid}]
                [:partner-payout/amount :decimal]]
    :indexes   []
+   :references []
+   :triggers  []
    :gates     nil
    :on-change nil})
 
@@ -154,6 +161,19 @@ by statement triggers after each insert, update and delete, with the changed
 rows as `cellar_new_rows` and `cellar_old_rows`. cellar makes neither: the
 app, or a library on top, passes them in. cellar keeps the changes it has run
 in its own table, `cellar.changes_done`.
+
+A table map's `:references` are references over several columns, `[]` for
+none (a one-column one is the column's `:references`):
+`{:columns [:job/order-id :job/shop-id] :to [:order/id :order/shop-id] :on-update :cascade}`.
+`:to` names the other table's columns, its primary key among them, which
+get a unique key together; `:on-update` is `:cascade` (a change of the other
+row's columns is carried to this row, by Postgres, past the gates) or
+`:refuse`; a delete of the other row is refused while a row points at it.
+Its `:triggers`, `[]` for none, are triggers a library on top (or the app)
+declares, calling a function it makes:
+`{:function "doorman.fill_1a2b3c4d" :arguments [] :timing :before :events #{:insert :update} :update-of [:job/order-id] :for-each :row}`;
+like the change triggers, one no map names is dropped
+([why](decisions/2026-10-23-a-table-map-says-references-over-several-columns-and-a-librarys-triggers.md)).
 
 ## Tests
 

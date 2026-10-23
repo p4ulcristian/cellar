@@ -225,17 +225,49 @@
    [3 [:tuple :qualified-keyword :any column-options-shape]]
    [::malli/default [:fn {:error/message "a column is [key type] or [key type options]"} (constantly false)]]])
 
+(def reference-shape
+  "A reference over several columns: :columns, the row's, in order;
+   :to, the other table's, in the same order, its primary key among them;
+   :on-update, :cascade (a change of the other row's columns is carried to
+   this row) or :refuse (the change is refused while this row points at
+   it). A delete of the other row is refused while this row points at it,
+   as with a column's :references."
+  [:map {:closed true}
+   [:columns [:sequential {:min 2} :qualified-keyword]]
+   [:to [:sequential {:min 2} :qualified-keyword]]
+   [:on-update [:enum :cascade :refuse]]])
+
+(def trigger-shape
+  "A trigger a library (or the app) declares on its table: Postgres calls
+   :function, made by whoever declares it, with :arguments (text, [] for
+   none), :timing :before or :after the :events (a set of :insert :update
+   :delete), :for-each :row or :statement. :update-of, with :update among
+   the events: nil for a change of any column, or the columns whose change
+   calls it."
+  [:map {:closed true}
+   [:function :string]
+   [:arguments [:sequential :string]]
+   [:timing [:enum :before :after]]
+   [:events [:set {:min 1} [:enum :insert :update :delete]]]
+   [:update-of [:maybe [:sequential {:min 1} :qualified-keyword]]]
+   [:for-each [:enum :row :statement]]])
+
 (def table-shape
   "A table map, every key cellar reads written out. :table, its key;
    :columns, [key type] or [key type options] each (column-shape); :indexes,
-   [[key …] …], [] for none; :gates, nil for none (no row-level security),
-   or a SQL condition for each operation, \"false\" for none allowed;
-   :on-change, nil for none, or the function the change triggers call and
-   its arguments. Open: another library's keys ride along."
+   [[key …] …], [] for none; :references, references over several columns
+   (reference-shape), [] for none (a one-column one is the column's
+   :references); :triggers, the triggers declared on it (trigger-shape),
+   [] for none; :gates, nil for none (no row-level security), or a SQL
+   condition for each operation, \"false\" for none allowed; :on-change,
+   nil for none, or the function the change triggers call and its
+   arguments. Open: another library's keys ride along."
   [:map
    [:table :keyword]
    [:columns [:sequential column-shape]]
    [:indexes [:sequential [:sequential :qualified-keyword]]]
+   [:references [:sequential reference-shape]]
+   [:triggers [:sequential trigger-shape]]
    [:gates [:maybe [:map {:closed true}
                     [:read :string]
                     [:insert :string]

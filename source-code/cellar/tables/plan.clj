@@ -33,12 +33,12 @@
   (let [old-column (fn [c] (get (set/map-invert column-renames) c c))
         table      (get-in state [:catalog new-table])
         renames    (concat
-                    (for [[n {:keys [column]}] (:foreign-keys table)
-                          :when (= n (names/make-foreign-key-name old-table (old-column column)))]
-                      [:foreign-keys n (names/make-foreign-key-name new-table column) :constraint])
-                    (for [[n {:keys [column]}] (:uniques table)
-                          :when (= n (names/make-unique-name old-table (old-column column)))]
-                      [:uniques n (names/make-unique-name new-table column) :constraint])
+                    (for [[n {:keys [columns]}] (:foreign-keys table)
+                          :when (= n (names/make-foreign-key-name old-table (map old-column columns)))]
+                      [:foreign-keys n (names/make-foreign-key-name new-table columns) :constraint])
+                    (for [[n {:keys [columns]}] (:uniques table)
+                          :when (= n (names/make-unique-name old-table (map old-column columns)))]
+                      [:uniques n (names/make-unique-name new-table columns) :constraint])
                     (for [[n {:keys [column]}] (:checks table)
                           :when (= n (names/make-enum-check-name old-table (old-column column)))]
                       [:checks n (names/make-enum-check-name new-table column) :constraint])
@@ -64,10 +64,10 @@
   (update-vals catalog
                (fn [table]
                  (update table :foreign-keys update-vals
-                         (fn [{:keys [foreign-table foreign-column] :as fk}]
+                         (fn [{:keys [foreign-table foreign-columns] :as fk}]
                            (if (= foreign-table old-table)
                              (assoc fk :foreign-table new-table
-                                    :foreign-column (get column-renames foreign-column foreign-column))
+                                    :foreign-columns (mapv #(get column-renames % %) foreign-columns))
                              fk))))))
 
 (defn- rename-column-in-table [table from to]
@@ -75,16 +75,16 @@
     (-> table
         (update :columns (partial mapv #(update % :name rename)))
         (update :primary-key (partial mapv rename))
-        (update :foreign-keys update-vals #(update % :column rename))
-        (update :uniques update-vals #(update % :column rename))
+        (update :foreign-keys update-vals #(update % :columns (partial mapv rename)))
+        (update :uniques update-vals #(update % :columns (partial mapv rename)))
         (update :checks update-vals #(update % :column rename))
         (update :not-null-checks update-vals #(update % :column rename))
         (update :indexes update-vals #(update % :columns (partial mapv rename))))))
 
 (defn- find-references-to [catalog table-name column-name]
   (for [[from-table {:keys [foreign-keys]}] catalog
-        [_ {:keys [foreign-table foreign-column]}] foreign-keys
-        :when (and (= foreign-table table-name) (or (nil? column-name) (= foreign-column column-name)))
+        [_ {:keys [foreign-table foreign-columns]}] foreign-keys
+        :when (and (= foreign-table table-name) (or (nil? column-name) (some #{column-name} foreign-columns)))
         :when (not= from-table table-name)]
     from-table))
 
@@ -138,8 +138,8 @@
                                  (let [uses? #(= column %)]
                                    (-> table
                                        (update :columns (partial filterv #(not (uses? (:name %)))))
-                                       (update :foreign-keys #(into {} (remove (comp uses? :column val)) %))
-                                       (update :uniques #(into {} (remove (comp uses? :column val)) %))
+                                       (update :foreign-keys #(into {} (remove (fn [[_ {:keys [columns]}]] (some uses? columns))) %))
+                                       (update :uniques #(into {} (remove (fn [[_ {:keys [columns]}]] (some uses? columns))) %))
                                        (update :checks #(into {} (remove (comp uses? :column val)) %))
                                        (update :not-null-checks #(into {} (remove (comp uses? :column val)) %))
                                        (update :indexes #(into {} (remove (fn [[_ {:keys [columns]}]] (some uses? columns))) %)))))))))
@@ -174,14 +174,39 @@
   (str "ALTER TABLE " table-name " ADD CONSTRAINT " check-name
        " CHECK (" column " IN (" (str/join ", " (map types/quote-text values)) "))"))
 
-(defn- write-foreign-key [table-name fk-name {:keys [column foreign-table foreign-column]}]
+(defn- write-foreign-key [table-name fk-name {:keys [columns foreign-table foreign-columns on-update]}]
   (str "ALTER TABLE " table-name " ADD CONSTRAINT " fk-name
-       " FOREIGN KEY (" column ") REFERENCES " foreign-table " (" foreign-column ")"))
+       " FOREIGN KEY (" (str/join ", " columns) ") REFERENCES " foreign-table " (" (str/join ", " foreign-columns) ")"
+       (when (= :cascade on-update) " ON UPDATE CASCADE")))
 
 (defn- write-table-parts [{:keys [columns primary-key uniques]}]
   (concat (map write-column columns)
           (when (seq primary-key) [(str "PRIMARY KEY (" (str/join ", " primary-key) ")")])
-          (for [[n {:keys [column]}] uniques] (str "CONSTRAINT " n " UNIQUE (" column ")"))))
+          (for [[n {:keys [columns]}] uniques] (str "CONSTRAINT " n " UNIQUE (" (str/join ", " columns) ")"))))
+
+(defn- does-reference-wait-for-unique-key?
+  "Whether a reference over several columns points at a table Postgres
+   has, whose unique key on those columns this plan makes in its slow
+   part: the reference can be made only after it."
+  [catalog {:keys [foreign-table foreign-columns]}]
+  (and (< 1 (count foreign-columns))
+       (contains? catalog foreign-table)
+       (not (contains? (get-in catalog [foreign-table :uniques]) (names/make-unique-name foreign-table foreign-columns)))))
+
+(defn- add-waiting-reference
+  "A reference that waits for its target's unique key: made in the slow
+   part, after every unique key, then proven."
+  [state table-name n fk]
+  (update state :waiting-references conj [table-name n fk]))
+
+(defn- plan-waiting-references [state]
+  (reduce (fn [state [table-name n fk]]
+            (-> state
+                (add-slow (str (write-foreign-key table-name n fk) " NOT VALID")
+                          (str "reference " n ", after its target's unique key"))
+                (add-slow (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows"))))
+          state
+          (:waiting-references state)))
 
 (defn- plan-new-table
   "A table not in Postgres: made whole. It has no rows, so its keys and
@@ -199,7 +224,10 @@
             state indexes)))
 
 (defn- plan-foreign-keys-of-new-table [state table-name {:keys [foreign-keys]}]
-  (reduce (fn [state [n fk]] (add-instant state (write-foreign-key table-name n fk) (str "reference of new table " table-name)))
+  (reduce (fn [state [n fk]]
+            (if (does-reference-wait-for-unique-key? (:catalog state) fk)
+              (add-waiting-reference state table-name n fk)
+              (add-instant state (write-foreign-key table-name n fk) (str "reference of new table " table-name))))
           state foreign-keys))
 
 (defn- plan-column [state table-name has-rows? existing {:keys [name type not-null? default default-sql volatile-default?] :as column}]
@@ -267,11 +295,11 @@
    then the key made from it, in the slow part. One in no map is dropped."
   [state table-name existing desired]
   (as-> state state
-    (reduce (fn [state [n {:keys [column]}]]
+    (reduce (fn [state [n {:keys [columns]}]]
               (if (contains? (:uniques existing) n)
                 state
                 (-> state
-                    (add-slow (str "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS " n " ON " table-name " (" column ")")
+                    (add-slow (str "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS " n " ON " table-name " (" (str/join ", " columns) ")")
                               (str "missing unique key " n))
                     (add-slow (str "ALTER TABLE " table-name " ADD CONSTRAINT " n " UNIQUE USING INDEX " n)
                               (str "unique key " n " from its index")))))
@@ -321,6 +349,27 @@
                 (add-instant state trigger-sql (str "missing trigger " trigger-name))))
             state (:triggers desired))))
 
+(defn- is-reference-changed?
+  "Whether a reference Postgres has differs from its map's: other columns
+   pointed at, or another ON UPDATE."
+  [found fk]
+  (not= (select-keys found [:columns :foreign-table :foreign-columns :on-update])
+        (select-keys fk [:columns :foreign-table :foreign-columns :on-update])))
+
+(defn- plan-dropped-references
+  "The references Postgres has that no map says, or that a map says
+   otherwise: dropped first, before any unique key they rest on."
+  [state table-name existing desired]
+  (reduce (fn [state [n found]]
+            (let [fk (get-in desired [:foreign-keys n])]
+              (cond
+                (nil? fk)
+                (add-instant state (str "ALTER TABLE " table-name " DROP CONSTRAINT " n) (str "reference " n " is in no map"))
+                (is-reference-changed? found fk)
+                (add-instant state (str "ALTER TABLE " table-name " DROP CONSTRAINT " n) (str "reference " n " changed"))
+                :else state)))
+          state (:foreign-keys existing)))
+
 (defn- plan-existing-table [state has-rows? table-name existing desired]
   (let [existing-columns (into {} (map (juxt :name identity)) (:columns existing))
         desired-names    (set (map :name (:columns desired)))]
@@ -339,23 +388,22 @@
       (plan-uniques state table-name existing desired)
       (plan-gates state table-name existing desired)
       (plan-triggers state table-name existing desired)
-      ;; references: NOT VALID now, VALIDATE in the slow part
+      ;; references: NOT VALID now, VALIDATE in the slow part; one whose
+      ;; target's unique key is still to be built, after it, in the slow part
+      ;; (one in no map, or changed, was dropped first: plan-dropped-references)
       (reduce (fn [state [n fk]]
                 (let [found (get-in existing [:foreign-keys n])]
                   (cond
-                    (nil? found)
-                    (-> state
-                        (add-instant (str (write-foreign-key table-name n fk) " NOT VALID") (str "missing reference " n))
-                        (add-slow (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows")))
+                    (or (nil? found) (is-reference-changed? found fk))
+                    (if (does-reference-wait-for-unique-key? (:catalog state) fk)
+                      (add-waiting-reference state table-name n fk)
+                      (-> state
+                          (add-instant (str (write-foreign-key table-name n fk) " NOT VALID") (str "missing reference " n))
+                          (add-slow (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows"))))
                     (not (:validated? found))
                     (add-slow state (str "ALTER TABLE " table-name " VALIDATE CONSTRAINT " n) (str "prove " n " on old rows"))
                     :else state)))
               state (:foreign-keys desired))
-      (reduce (fn [state [n _]]
-                (if (contains? (:foreign-keys desired) n)
-                  state
-                  (add-instant state (str "ALTER TABLE " table-name " DROP CONSTRAINT " n) (str "reference " n " is in no map"))))
-              state (:foreign-keys existing))
       ;; enums
       (reduce (fn [state [n check]]
                 (let [found (get-in existing [:checks n])]
@@ -407,13 +455,17 @@
   [{:keys [catalog desired changes changes-done has-rows?]}]
   (let [fresh?   (and (empty? changes-done) (not-any? #(contains? catalog %) (keys desired)))
         pending  (remove #(contains? changes-done (:id %)) changes)
-        start    {:catalog catalog :instant [] :slow [] :stops []
+        start    {:catalog catalog :instant [] :slow [] :stops [] :waiting-references []
                   :changes-to-mark (mapv :id pending)}
         state    (if fresh? start (reduce apply-change start pending))
         catalog  (:catalog state)
         new      (remove #(contains? catalog %) (keys desired))
         folders  (->> new (map names/find-folder-of-table) (remove #{"public"}) distinct)
         state    (as-> state state
+                   (reduce (fn [state table-name]
+                             (plan-dropped-references state table-name (get catalog table-name) (get desired table-name)))
+                           state
+                           (filter #(contains? catalog %) (keys desired)))
                    (reduce #(add-instant %1 (str "CREATE SCHEMA IF NOT EXISTS " %2) (str "folder " %2 " for its tables")) state folders)
                    (reduce #(plan-new-table %1 %2 (get desired %2)) state new)
                    (reduce #(plan-foreign-keys-of-new-table %1 %2 (get desired %2)) state new)
@@ -423,6 +475,7 @@
                              (plan-existing-table state has-rows? table-name (get catalog table-name) (get desired table-name)))
                            state
                            (filter #(contains? catalog %) (keys desired)))
+                   (plan-waiting-references state)
                    (reduce (fn [state table-name]
                              (add-stop state (str "table " table-name " is in Postgres but in no map: "
                                                   "add a change file, {:rename-table [:" table-name " …]} "

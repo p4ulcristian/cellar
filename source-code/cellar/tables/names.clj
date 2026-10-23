@@ -63,8 +63,18 @@
       joined
       (str (subs joined 0 54) "_" (format "%08x" (bit-and (hash joined) 0xffffffff))))))
 
-(defn make-foreign-key-name [table-name column-name] (make-identifier table-name column-name "fkey"))
-(defn make-unique-name [table-name column-name] (make-identifier table-name column-name "key"))
+(defn make-foreign-key-name
+  "A reference's name: its table and its columns (one or several), then fkey."
+  [table-name column-names]
+  (apply make-identifier table-name (concat column-names ["fkey"])))
+(defn make-unique-name
+  "A unique key's name: its table and its columns (one or several), then key."
+  [table-name column-names]
+  (apply make-identifier table-name (concat column-names ["key"])))
+(defn make-trigger-name
+  "A declared trigger's name: its table, then a hash of its SQL."
+  [table-name body]
+  (make-identifier (find-table-part table-name) "trigger" (format "%08x" (bit-and (hash body) 0xffffffff))))
 (defn make-enum-check-name [table-name column-name] (make-identifier table-name column-name "enum"))
 (defn make-not-null-check-name [table-name column-name] (make-identifier table-name column-name "not_null"))
 (defn make-index-name [table-name column-names] (apply make-identifier table-name (concat column-names ["idx"])))

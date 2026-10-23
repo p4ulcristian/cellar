@@ -8,7 +8,12 @@
    the changed rows as tables the function reads: cellar_new_rows (after
    an insert or update) and cellar_old_rows (after an update or delete).
    A trigger's name ends in a hash of its SQL, so a changed :on-change is a
-   new name: the old trigger is dropped and the new one made."
+   new name: the old trigger is dropped and the new one made.
+
+   A table map's :triggers are triggers declared by a library on top (or
+   the app), each its own: a function, before or after which events, for
+   each row or statement (turn-declared-triggers-into-triggers); doorman's
+   fill of a record's carried columns from its parent is one."
   (:require
    [clojure.string :as str]
    [cellar.tables.names :as names]))
@@ -28,4 +33,24 @@
               :let [body (str (format when-text table-name) " FOR EACH STATEMENT EXECUTE FUNCTION "
                               function "(" (str/join ", " (map quote-text arguments)) ")")
                     trigger-name (names/make-identifier (names/find-table-part table-name) "on" operation (format "%08x" (bit-and (hash body) 0xffffffff)))]]
+          [trigger-name (str "CREATE TRIGGER " trigger-name " " body)])))
+
+(defn- write-events
+  "INSERT OR UPDATE OF a, b OR DELETE, in that order."
+  [events update-of]
+  (str/join " OR " (for [event [:insert :update :delete] :when (contains? events event)]
+                     (if (and (= :update event) (seq update-of))
+                       (str "UPDATE OF " (str/join ", " (map names/turn-key-into-column-name update-of)))
+                       (str/upper-case (name event))))))
+
+(defn turn-declared-triggers-into-triggers
+  "{trigger-name sql} for a table's :triggers, each named by a hash of
+   its SQL, so a changed one is a new name: the old dropped, the new made."
+  [table-name declared]
+  (into {}
+        (for [{:keys [function arguments timing events update-of for-each]} declared
+              :let [body (str (str/upper-case (name timing)) " " (write-events events update-of)
+                              " ON " table-name " FOR EACH " (str/upper-case (name for-each))
+                              " EXECUTE FUNCTION " function "(" (str/join ", " (map quote-text arguments)) ")")
+                    trigger-name (names/make-trigger-name table-name body)]]
           [trigger-name (str "CREATE TRIGGER " trigger-name " " body)])))

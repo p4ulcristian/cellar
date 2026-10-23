@@ -15,6 +15,8 @@
    :columns   [[:shop/id   :uuid   {:primary-key? true :default :random-uuid}]
                [:shop/name :string]]
    :indexes   []
+   :references []
+   :triggers  []
    :gates     nil
    :on-change nil})
 
@@ -28,6 +30,8 @@
                [:order/paid       :boolean      {:default false}]
                [:order/created-at :time/instant {:default :now}]]
    :indexes   [[:order/shop-id :order/created-at]]
+   :references []
+   :triggers  []
    :gates     nil
    :on-change nil})
 
@@ -62,6 +66,8 @@
    :columns   [[:invoice/id     :uuid   {:primary-key? true :default :random-uuid}]
                [:invoice/number :string {:unique? true}]]
    :indexes   []
+   :references []
+   :triggers  []
    :gates     nil
    :on-change nil})
 

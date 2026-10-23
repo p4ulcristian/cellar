@@ -24,6 +24,8 @@
                     [:order/created-at :time/instant {:default :now}]
                     [:order/total      :decimal]]
         :indexes   [[:order/shop-id :order/created-at]]
+        :references []
+        :triggers  []
         :gates     nil
         :on-change nil})
 
@@ -42,8 +44,8 @@
    HikariCP's and PgJDBC's own lines go to the log of the pool they are
    about (cellar.queries.pool-lines).
 
-   A table map writes out every key cellar reads (:indexes [] for none,
-   :gates and :on-change nil for none); it is open, so another library's
+   A table map writes out every key cellar reads (:indexes, :references
+   and :triggers [] for none, :gates and :on-change nil for none); it is open, so another library's
    keys ride along. A column is [key type] or [key type options], and says
    only the options it has; an unsaid one is no or none, the safe side
    (NOT NULL, not unique, not a primary key, no default, no reference), and
@@ -82,7 +84,23 @@
    [\"order__id\" …]}: the name of a Postgres function the app, or a library
    on top, makes and passes in) gets three statement triggers calling that
    function after each insert, update and delete, the changed rows readable
-   in it as cellar_new_rows and cellar_old_rows."
+   in it as cellar_new_rows and cellar_old_rows.
+   A table map's :references are references over several columns
+     {:columns [:job/order-id :job/shop-id] :to [:order/id :order/shop-id] :on-update :cascade}
+   (a one-column one is the column's :references): :to names the other
+   table's columns, its primary key among them, which get a unique key
+   together (Postgres points a reference only at columns unique together;
+   with the primary key among them it holds for every row); :on-update
+   :cascade carries a change of the other row's columns to this row
+   (Postgres's own, past the gates), :refuse refuses it. A delete of the
+   other row is refused while a row points at it. Made NOT VALID and
+   proven in the slow part, after the unique key when that is new.
+   A table map's :triggers are triggers a library on top (or the app)
+   declares, calling a function it makes:
+     {:function \"doorman.fill_1a2b3c4d\" :arguments [] :timing :before
+      :events #{:insert :update} :update-of [:job/order-id] :for-each :row}
+   each named by a hash of its SQL, made and dropped like the change
+   triggers: a trigger no map names is dropped."
   (:require
    [clojure.string :as str]
    [cellar.queries.listen :as listen]
@@ -174,6 +192,14 @@
   "Runs a statement for what it changes. Returns how many rows it changed."
   [pool-or-transaction query params]
   (sql/run-statement! pool-or-transaction query params))
+
+(defn is-transaction?
+  "Whether this is a transaction run-in-transaction! handed its function,
+   rather than a pool: for a function that must run on its own, after
+   the caller's transaction is kept (a file deleted from a bucket can't
+   be undone with a rollback)."
+  [pool-or-transaction]
+  (some? (:cellar/connection pool-or-transaction)))
 
 (defn run-in-transaction!
   "Runs (f transaction) in one transaction: kept when f returns, undone when

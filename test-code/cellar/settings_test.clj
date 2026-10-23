@@ -47,6 +47,8 @@
   {:table     :things
    :columns   [[:thing/id :int {:primary-key? true}]]
    :indexes   []
+   :references []
+   :triggers  []
    :gates     nil
    :on-change nil})
 
@@ -88,9 +90,10 @@
            (find-refusal #(cellar/migrate! nil [a-table] [] {:instant-part {:statement-timeout-ms 1000 :lock-timeout-ms 1000}}))))))
 
 (deftest a-table-map-writes-out-every-key-cellar-reads
-  (testing "a table without :indexes, :gates or :on-change is refused, each named"
+  (testing "a table without :indexes, :references, :triggers, :gates or :on-change is refused, each named"
     (is (= {:type :cellar/bad-tables
-            :errors [{:indexes ["missing required key"] :gates ["missing required key"] :on-change ["missing required key"]}]}
+            :errors [{:indexes ["missing required key"] :references ["missing required key"] :triggers ["missing required key"]
+                      :gates ["missing required key"] :on-change ["missing required key"]}]}
            (find-refusal #(cellar/make-plan-from-tables nil [(select-keys a-table [:table :columns])] [])))))
   (testing "a column says only the options it has; an unsaid one is no or none"
     (is (= [:map [:thing/id :int] [:thing/note :string] [:thing/when {:optional true} [:maybe :time/instant]]]

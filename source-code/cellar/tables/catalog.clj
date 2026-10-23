@@ -4,8 +4,10 @@
 
      {\"orders\" {:columns      [{:name \"order__id\" :type \"uuid\" :not-null? true :default \"gen_random_uuid()\"} …]
                  :primary-key  [\"order__id\"]
-                 :foreign-keys {\"orders_order__shop_id_fkey\" {:column \"order__shop_id\" :foreign-table \"shops\"
-                                                              :foreign-column \"shop__id\" :validated? true}}
+                 :foreign-keys {\"orders_order__shop_id_fkey\" {:columns [\"order__shop_id\"] :foreign-table \"shops\"
+                                                              :foreign-columns [\"shop__id\"] :on-update :refuse
+                                                              :validated? true}}
+                 :uniques      {\"orders_order__id_order__shop_id_key\" {:columns [\"order__id\" \"order__shop_id\"]}}
                  :checks       {\"orders_order__status_enum\" {:column \"order__status\" :values [\"draft\" \"done\"] :validated? true}}
                  :indexes      {\"orders_order__shop_id_idx\" {:columns [\"order__shop_id\"] :valid? true}}}}
 
@@ -53,16 +55,22 @@
   [definition]
   (mapv #(str/replace (second %) "''" "'") (re-seq #"'((?:[^']|'')*)'::text" definition)))
 
-(defn- add-constraint [tables {:keys [table-name constraint-name constraint-type validated definition
+(def ^:private on-update-actions
+  "pg_constraint's confupdtype: no action is cellar's :refuse; the others
+   cellar never makes, so a map never says them and they differ."
+  {"a" :refuse "c" :cascade "r" :restrict "n" :set-null "d" :set-default})
+
+(defn- add-constraint [tables {:keys [table-name constraint-name constraint-type validated definition on-update
                                       column-names foreign-table foreign-column-names]}]
   (case constraint-type
     "p" (assoc-in tables [table-name :primary-key] column-names)
     "f" (assoc-in tables [table-name :foreign-keys constraint-name]
-                  {:column         (first column-names)
-                   :foreign-table  foreign-table
-                   :foreign-column (first foreign-column-names)
-                   :validated?     validated})
-    "u" (assoc-in tables [table-name :uniques constraint-name] {:column (first column-names)})
+                  {:columns         (vec column-names)
+                   :foreign-table   foreign-table
+                   :foreign-columns (vec foreign-column-names)
+                   :on-update       (get on-update-actions on-update)
+                   :validated?      validated})
+    "u" (assoc-in tables [table-name :uniques constraint-name] {:columns (vec column-names)})
     "c" (cond
           (str/ends-with? constraint-name "_enum")
           (assoc-in tables [table-name :checks constraint-name]

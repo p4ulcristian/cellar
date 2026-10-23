@@ -3,6 +3,7 @@ SELECT CASE WHEN n.nspname = 'public' THEN c.relname::text ELSE n.nspname || '.'
        con.conname::text          AS constraint_name,
        con.contype::text          AS constraint_type,
        con.convalidated           AS validated,
+       con.confupdtype::text      AS on_update,
        pg_get_constraintdef(con.oid) AS definition,
        (SELECT array_agg(a.attname::text ORDER BY k.ord)
         FROM unnest(con.conkey) WITH ORDINALITY k(attnum, ord)

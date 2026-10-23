@@ -102,6 +102,8 @@
   {:table     :told-things
    :columns   [[:told-thing/id :int {:primary-key? true}]]
    :indexes   []
+   :references []
+   :triggers  []
    :gates     nil
    :on-change {:function "public.tell_test" :arguments ["told_thing__id"]}})
 
